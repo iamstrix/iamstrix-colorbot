@@ -375,7 +375,7 @@ def main():
             screenshot = sct.grab(monitor)
             frame = np.array(screenshot)[:, :, :3]
             
-        if frame is None:
+        if frame is None or frame.size == 0 or len(frame.shape) < 2 or frame.shape[0] == 0 or frame.shape[1] == 0:
             time.sleep(0.001)
             continue
         
