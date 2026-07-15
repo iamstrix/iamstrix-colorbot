@@ -333,6 +333,12 @@ def main():
 
     # Capture loop
     while True:
+        try:
+            if cv2.getWindowProperty("Color Tuning", cv2.WND_PROP_VISIBLE) < 1:
+                break
+        except cv2.error:
+            break
+
         if show_monitor_slider:
             selected_monitor = cv2.getTrackbarPos("Monitor", "Color Tuning")
         else:
