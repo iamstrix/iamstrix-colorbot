@@ -107,6 +107,10 @@ lock_area_end = None
 drawing_lock_area = False
 lock_area_active = False
 
+# Preview panel dimensions within the composited canvas
+PREVIEW_W = 640
+PREVIEW_H = 360
+
 def mouse_callback(event, x, y, flags, param):
     global mouse_x, mouse_y
     global drag_start, drag_end, drawing_rect, calibrate_request
@@ -121,7 +125,8 @@ def mouse_callback(event, x, y, flags, param):
             lock_area_end = (x, y)
             
     elif event == cv2.EVENT_LBUTTONDOWN:
-        if x < 800 and y < 450:
+        # Only allow drag inside the live preview region (left half)
+        if x < PREVIEW_W and y < PREVIEW_H:
             drag_start = (x, y)
             drag_end = (x, y)
             drawing_rect = True
@@ -133,7 +138,8 @@ def mouse_callback(event, x, y, flags, param):
             calibrate_request = True
             
     elif event == cv2.EVENT_RBUTTONDOWN:
-        if x < 800 and y < 450:
+        # Only allow drag inside the live preview region (left half)
+        if x < PREVIEW_W and y < PREVIEW_H:
             lock_area_start = (x, y)
             lock_area_end = (x, y)
             drawing_lock_area = True
@@ -250,18 +256,18 @@ def main():
     
     set_dpi_awareness()
     
-    print("=== Cursor Lock Tracker ===")
+    print("=== iamstrix-colorbot ===")
     print("Instructions:")
-    print("1. A window 'Color Tuning' will open showing the mask and target detection.")
-    print("2. Left-click & drag to select a color calibration area.")
-    print("3. Right-click & drag to restrict mouse locking to a specific boundary area.")
+    print("1. A unified window will open with the live preview and color mask side-by-side.")
+    print("2. Left-click & drag on the LIVE PREVIEW to select a color calibration area.")
+    print("3. Right-click & drag on the LIVE PREVIEW to restrict mouse locking to a boundary.")
     print("   * Single right-click clears the boundary and reverts to full-screen tracking.")
     print("4. Press the ALT key to TOGGLE cursor lock ON/OFF.")
     print("5. Set Click Speed (CPS) to automate clicks without drag-and-drop bugs.")
     print("   * NOTE: Make sure to DISABLE any external auto-clicker macros to avoid conflicts!")
     print("6. Hover your mouse over any trackbar label/slider for 1 second to view description.")
     print("7. Press 'q' in the window to quit.")
-    print("===========================")
+    print("=========================")
 
     # Detect number of monitors and their coordinates
     num_monitors = 1
@@ -289,26 +295,29 @@ def main():
         monitor = sct.monitors[current_monitor + 1]
         print(f"[SUCCESS] MSS initialized for monitor index {current_monitor}: {monitor}")
 
-    # Create windows for tuning and display
-    cv2.namedWindow("Color Tuning", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow("Color Tuning", 800, 1000)
-    cv2.setMouseCallback("Color Tuning", mouse_callback)
+    # Window name constant
+    WIN_NAME = "iamstrix-colorbot"
+
+    # Create unified window for preview, mask, and controls
+    cv2.namedWindow(WIN_NAME, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(WIN_NAME, PREVIEW_W * 2, 800)
+    cv2.setMouseCallback(WIN_NAME, mouse_callback)
     
     # Create trackbars for HSV tuning
-    cv2.createTrackbar("Low H", "Color Tuning", 8, 179, nothing)
-    cv2.createTrackbar("High H", "Color Tuning", 18, 179, nothing)
-    cv2.createTrackbar("Low S", "Color Tuning", 80, 255, nothing)
-    cv2.createTrackbar("High S", "Color Tuning", 255, 255, nothing)
-    cv2.createTrackbar("Low V", "Color Tuning", 40, 255, nothing)
-    cv2.createTrackbar("High V", "Color Tuning", 110, 255, nothing)
-    cv2.createTrackbar("Min Area", "Color Tuning", 1000, 5000, nothing)
-    cv2.createTrackbar("Smoothing", "Color Tuning", 3, 20, nothing)
-    cv2.createTrackbar("Click Speed (CPS)", "Color Tuning", 0, 50, nothing)
+    cv2.createTrackbar("Low H", WIN_NAME, 8, 179, nothing)
+    cv2.createTrackbar("High H", WIN_NAME, 18, 179, nothing)
+    cv2.createTrackbar("Low S", WIN_NAME, 80, 255, nothing)
+    cv2.createTrackbar("High S", WIN_NAME, 255, 255, nothing)
+    cv2.createTrackbar("Low V", WIN_NAME, 40, 255, nothing)
+    cv2.createTrackbar("High V", WIN_NAME, 110, 255, nothing)
+    cv2.createTrackbar("Min Area", WIN_NAME, 1000, 5000, nothing)
+    cv2.createTrackbar("Smoothing", WIN_NAME, 3, 20, nothing)
+    cv2.createTrackbar("Click Speed (CPS)", WIN_NAME, 0, 50, nothing)
 
     # Only show display toggle slider if there is more than 1 display detected
     show_monitor_slider = num_monitors > 1
     if show_monitor_slider:
-        cv2.createTrackbar("Monitor", "Color Tuning", 0, num_monitors - 1, nothing)
+        cv2.createTrackbar("Monitor", WIN_NAME, 0, num_monitors - 1, nothing)
 
     hover_labels = [
         {"prefix": "Low H:", "name": "Low H", "desc": "Low limit for Hue (color type). Warm brown tones usually start around 5."},
@@ -334,13 +343,13 @@ def main():
     # Capture loop
     while True:
         try:
-            if cv2.getWindowProperty("Color Tuning", cv2.WND_PROP_VISIBLE) < 1:
+            if cv2.getWindowProperty(WIN_NAME, cv2.WND_PROP_VISIBLE) < 1:
                 break
         except cv2.error:
             break
 
         if show_monitor_slider:
-            selected_monitor = cv2.getTrackbarPos("Monitor", "Color Tuning")
+            selected_monitor = cv2.getTrackbarPos("Monitor", WIN_NAME)
         else:
             selected_monitor = 0
 
@@ -385,7 +394,7 @@ def main():
             time.sleep(0.001)
             continue
         
-        resized_frame = cv2.resize(frame, (800, 450))
+        resized_frame = cv2.resize(frame, (PREVIEW_W, PREVIEW_H))
         hsv = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2HSV)
         
         # Handle drag-to-calibrate (smart crop) request
@@ -400,25 +409,25 @@ def main():
                     hsv_crop = hsv[y_start:y_end, x_start:x_end]
                     min_h, max_h, min_s, max_s, min_v, max_v = calibrate_color_range(hsv_crop)
                     
-                    cv2.setTrackbarPos("Low H", "Color Tuning", min_h)
-                    cv2.setTrackbarPos("High H", "Color Tuning", max_h)
-                    cv2.setTrackbarPos("Low S", "Color Tuning", min_s)
-                    cv2.setTrackbarPos("High S", "Color Tuning", max_s)
-                    cv2.setTrackbarPos("Low V", "Color Tuning", min_v)
-                    cv2.setTrackbarPos("High V", "Color Tuning", max_v)
+                    cv2.setTrackbarPos("Low H", WIN_NAME, min_h)
+                    cv2.setTrackbarPos("High H", WIN_NAME, max_h)
+                    cv2.setTrackbarPos("Low S", WIN_NAME, min_s)
+                    cv2.setTrackbarPos("High S", WIN_NAME, max_s)
+                    cv2.setTrackbarPos("Low V", WIN_NAME, min_v)
+                    cv2.setTrackbarPos("High V", WIN_NAME, max_v)
                     print(f"[SUCCESS] Calibrated from crop selection: H={min_h}-{max_h}, S={min_s}-{max_s}, V={min_v}-{max_v}")
             calibrate_request = False
 
         # Read current trackbar positions
-        l_h = cv2.getTrackbarPos("Low H", "Color Tuning")
-        h_h = cv2.getTrackbarPos("High H", "Color Tuning")
-        l_s = cv2.getTrackbarPos("Low S", "Color Tuning")
-        h_s = cv2.getTrackbarPos("High S", "Color Tuning")
-        l_v = cv2.getTrackbarPos("Low V", "Color Tuning")
-        h_v = cv2.getTrackbarPos("High V", "Color Tuning")
-        min_area = cv2.getTrackbarPos("Min Area", "Color Tuning")
-        smoothing = max(1, cv2.getTrackbarPos("Smoothing", "Color Tuning"))
-        cps = cv2.getTrackbarPos("Click Speed (CPS)", "Color Tuning")
+        l_h = cv2.getTrackbarPos("Low H", WIN_NAME)
+        h_h = cv2.getTrackbarPos("High H", WIN_NAME)
+        l_s = cv2.getTrackbarPos("Low S", WIN_NAME)
+        h_s = cv2.getTrackbarPos("High S", WIN_NAME)
+        l_v = cv2.getTrackbarPos("Low V", WIN_NAME)
+        h_v = cv2.getTrackbarPos("High V", WIN_NAME)
+        min_area = cv2.getTrackbarPos("Min Area", WIN_NAME)
+        smoothing = max(1, cv2.getTrackbarPos("Smoothing", WIN_NAME))
+        cps = cv2.getTrackbarPos("Click Speed (CPS)", WIN_NAME)
         
         mask = cv2.inRange(hsv, np.array([l_h, l_s, l_v]), np.array([h_h, h_s, h_v]))
         kernel = np.ones((5, 5), np.uint8)
@@ -472,8 +481,8 @@ def main():
             curr_x, curr_y = win32api.GetCursorPos()
             
             orig_h, orig_w = frame.shape[:2]
-            scale_x = orig_w / 800.0
-            scale_y = orig_h / 450.0
+            scale_x = orig_w / float(PREVIEW_W)
+            scale_y = orig_h / float(PREVIEW_H)
             
             mapped_cx = int(target_center[0] * scale_x)
             mapped_cy = int(target_center[1] * scale_y)
@@ -522,11 +531,11 @@ def main():
             lx1, ly1 = lock_area_start
             lx2, ly2 = lock_area_end
             cv2.rectangle(resized_frame, (min(lx1, lx2), min(ly1, ly2)), (max(lx1, lx2), max(ly1, ly2)), (0, 165, 255), 2)
-            cv2.putText(resized_frame, "Lock Boundary Active (Right-click once to clear)", (20, 430),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 165, 255), 1)
+            cv2.putText(resized_frame, "Lock Boundary Active (Right-click to clear)", (20, PREVIEW_H - 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 165, 255), 1)
         else:
-            cv2.putText(resized_frame, "Tip: Hover over trackbar labels for guides", (20, 430),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 150), 1)
+            cv2.putText(resized_frame, "Tip: Hover over trackbar labels for guides", (20, PREVIEW_H - 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1)
 
         # ----------------------------------------------------
         # NATIVE WIN32 HOVER HOOK FOR TRACKBARS
@@ -541,7 +550,7 @@ def main():
                 while parent:
                     try:
                         t = win32gui.GetWindowText(parent)
-                        if "Color Tuning" in t:
+                        if "iamstrix-colorbot" in t:
                             is_our_window = True
                             break
                         parent = win32gui.GetParent(parent)
@@ -595,9 +604,25 @@ def main():
             hovered_variable = None
             hover_start_time = 0
 
-        # Show frames
-        cv2.imshow("Color Tuning", resized_frame)
-        cv2.imshow("Color Mask (Tuning View)", cv2.resize(mask, (800, 450)))
+        # --- Composite the unified canvas ---
+        # Convert single-channel mask to 3-channel BGR for side-by-side display
+        mask_resized = cv2.resize(mask, (PREVIEW_W, PREVIEW_H))
+        mask_bgr = cv2.cvtColor(mask_resized, cv2.COLOR_GRAY2BGR)
+
+        # Draw section labels on each panel
+        cv2.putText(resized_frame, "LIVE PREVIEW", (10, 18),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+        cv2.putText(mask_bgr, "COLOR MASK", (10, 18),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+
+        # Horizontally stack both panels into a single canvas
+        canvas = np.hstack((resized_frame, mask_bgr))
+
+        # Draw a thin vertical divider line between the two panels
+        cv2.line(canvas, (PREVIEW_W, 0), (PREVIEW_W, PREVIEW_H), (80, 80, 80), 2)
+
+        # Display the unified canvas in the single window
+        cv2.imshow(WIN_NAME, canvas)
         
         # Press 'q' to exit
         if cv2.waitKey(1) & 0xFF == ord('q'):

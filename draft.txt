@@ -1,0 +1,2 @@
+smart crop feature
+    -> drag 
