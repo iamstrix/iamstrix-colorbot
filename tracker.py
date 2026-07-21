@@ -173,11 +173,66 @@ macro_thread = None
 macro_stop_event = None
 macro_current_step = -1
 
+# Layout Dimensions
+PREVIEW_W = 800
+PREVIEW_H = 450
+SLOTS_H = 45
+MACRO_H = 260
+
 GRID_SIZE = 9
-CELL_SIZE = 30
-GRID_PX = GRID_SIZE * CELL_SIZE  # 270px
-GRID_LEFT = (640 * 2 - GRID_PX) // 2
-GRID_TOP = 420 + 30
+CELL_SIZE = 22
+GRID_PX = GRID_SIZE * CELL_SIZE  # 198px
+GRID_LEFT = 1080                 # Column 3 Grid Left in main canvas (x = 1080)
+GRID_TOP = PREVIEW_H + SLOTS_H + 35  # 530px in main canvas
+
+# Custom Dark Mode Sliders State
+sliders = {
+    "Low H":             {"val": 8,    "min": 0, "max": 179, "desc": "Low limit for Hue (color type)."},
+    "High H":            {"val": 18,   "min": 0, "max": 179, "desc": "High limit for Hue (color type)."},
+    "Low S":             {"val": 80,   "min": 0, "max": 255, "desc": "Low limit for Saturation (color intensity)."},
+    "High S":            {"val": 255,  "min": 0, "max": 255, "desc": "High limit for Saturation."},
+    "Low V":             {"val": 40,   "min": 0, "max": 255, "desc": "Low limit for Value (brightness)."},
+    "High V":            {"val": 110,  "min": 0, "max": 255, "desc": "High limit for Value."},
+    "Min Area":          {"val": 1000, "min": 0, "max": 5000, "desc": "Minimum target size in pixels."},
+    "Smoothing":         {"val": 3,    "min": 1, "max": 20,  "desc": "Divisor for cursor glide interpolation."},
+    "Click Speed (CPS)": {"val": 0,    "min": 0, "max": 50,  "desc": "Auto-click rate."},
+    "ms/cell":           {"val": 100,  "min": 10, "max": 500, "desc": "Duration per grid cell for WASD macro."},
+    "Monitor":           {"val": 0,    "min": 0, "max": 0,   "desc": "Index of display screen to capture."}
+}
+
+active_slider_drag = None
+
+def get_val(name):
+    return sliders[name]["val"]
+
+def set_val(name, val):
+    info = sliders[name]
+    sliders[name]["val"] = max(info["min"], min(info["max"], int(val)))
+
+SLIDER_LAYOUT = [
+    ("Low H", 25, 45, 210),
+    ("High H", 265, 45, 210),
+    ("Low S", 25, 90, 210),
+    ("High S", 265, 90, 210),
+    ("Low V", 25, 135, 210),
+    ("High V", 265, 135, 210),
+    ("Min Area", 25, 180, 210),
+    ("Smoothing", 265, 180, 210),
+    ("Click Speed (CPS)", 25, 225, 210),
+    ("ms/cell", 265, 225, 210),
+]
+
+def check_slider_hit(x, y):
+    panel_y_start = PREVIEW_H + SLOTS_H
+    for name, lx, ly, sw in SLIDER_LAYOUT:
+        sy = panel_y_start + ly
+        if lx <= x <= lx + sw and sy - 15 <= y <= sy + 15:
+            ratio = max(0.0, min(1.0, (x - lx) / float(sw)))
+            info = sliders[name]
+            val = info["min"] + int(ratio * (info["max"] - info["min"]))
+            set_val(name, val)
+            return name
+    return None
 
 # Direction mapping: (delta_col, delta_row) -> (scan_code, label)
 DIR_MAP = {
@@ -231,26 +286,30 @@ def trace_orthogonal(from_cell, to_cell):
         cells.append(tuple(curr))
     return cells
 
-# Preview panel dimensions within the composited canvas
-PREVIEW_W = 640
-PREVIEW_H = 360
-
 def mouse_callback(event, x, y, flags, param):
     global mouse_x, mouse_y
     global drag_start, drag_end, drawing_rect, calibrate_request
     global lock_area_start, lock_area_end, drawing_lock_area, lock_area_active
     global color_slots, selected_slot
     global macro_drawing, macro_path_cells, macro_last_cell, macro_steps
+    global active_slider_drag
     
     if event == cv2.EVENT_MOUSEMOVE:
         mouse_x = x
         mouse_y = y
-        if drawing_rect:
+        if active_slider_drag:
+            for name, lx, ly, sw in SLIDER_LAYOUT:
+                if name == active_slider_drag:
+                    ratio = max(0.0, min(1.0, (x - lx) / float(sw)))
+                    info = sliders[name]
+                    val = info["min"] + int(ratio * (info["max"] - info["min"]))
+                    set_val(name, val)
+                    break
+        elif drawing_rect:
             drag_end = (x, y)
         elif drawing_lock_area:
             lock_area_end = (x, y)
         elif macro_drawing and macro_last_cell is not None:
-            # Track freeform path through grid cells
             gx = x - GRID_LEFT
             gy = y - GRID_TOP
             if 0 <= gx < GRID_PX and 0 <= gy < GRID_PX:
@@ -263,8 +322,10 @@ def mouse_callback(event, x, y, flags, param):
                     macro_last_cell = curr
             
     elif event == cv2.EVENT_LBUTTONDOWN:
-        # Check if click is in Movement Macro Grid panel (y >= 420)
-        if y >= 420:
+        hit = check_slider_hit(x, y)
+        if hit:
+            active_slider_drag = hit
+        elif y >= PREVIEW_H + SLOTS_H:
             if GRID_LEFT <= x < GRID_LEFT + GRID_PX and GRID_TOP <= y < GRID_TOP + GRID_PX:
                 col = (x - GRID_LEFT) // CELL_SIZE
                 row = (y - GRID_TOP) // CELL_SIZE
@@ -272,10 +333,9 @@ def mouse_callback(event, x, y, flags, param):
                 macro_last_cell = (col, row)
                 macro_steps = []
                 macro_drawing = True
-        # Check if click is on the color slots panel (360 <= y < 420)
         elif y >= PREVIEW_H:
-            box_width = 80
-            box_spacing = 20
+            box_width = 100
+            box_spacing = 30
             start_x = (PREVIEW_W * 2 - (3 * box_width + 2 * box_spacing)) // 2
             
             for i in range(3):
@@ -284,21 +344,21 @@ def mouse_callback(event, x, y, flags, param):
                     selected_slot = i
                     color_slots[i]["active"] = True
                     lh, hh, ls, hs, lv, hv = color_slots[i]["hsv"]
-                    cv2.setTrackbarPos("Low H", "iamstrix-colorbot", lh)
-                    cv2.setTrackbarPos("High H", "iamstrix-colorbot", hh)
-                    cv2.setTrackbarPos("Low S", "iamstrix-colorbot", ls)
-                    cv2.setTrackbarPos("High S", "iamstrix-colorbot", hs)
-                    cv2.setTrackbarPos("Low V", "iamstrix-colorbot", lv)
-                    cv2.setTrackbarPos("High V", "iamstrix-colorbot", hv)
+                    set_val("Low H", lh)
+                    set_val("High H", hh)
+                    set_val("Low S", ls)
+                    set_val("High S", hs)
+                    set_val("Low V", lv)
+                    set_val("High V", hv)
                     print(f"[INFO] Selected Color Slot {i+1}")
                     break
-        # Only allow drag inside the live preview region (left half)
         elif x < PREVIEW_W and y < PREVIEW_H:
             drag_start = (x, y)
             drag_end = (x, y)
             drawing_rect = True
             
     elif event == cv2.EVENT_LBUTTONUP:
+        active_slider_drag = None
         if drawing_rect:
             drag_end = (x, y)
             drawing_rect = False
@@ -308,22 +368,21 @@ def mouse_callback(event, x, y, flags, param):
             macro_steps = path_to_steps(macro_path_cells)
             if macro_steps:
                 total_cells = sum(s[1] for s in macro_steps)
-                print(f"[SUCCESS] Path drawn: {len(macro_steps)} steps, {total_cells} cells, {len(macro_path_cells)} waypoints")
-                for i, (sc, n, lbl) in enumerate(macro_steps):
-                    print(f"  Step {i+1}: {lbl} x{n} cells")
+                print(f"[SUCCESS] Path drawn: {len(macro_steps)} steps, {total_cells} cells")
             else:
                 print("[INFO] Path too short. Draw across at least 2 cells.")
             
     elif event == cv2.EVENT_RBUTTONDOWN:
-        if y >= 420:
-            macro_path_cells = []
-            macro_steps = []
-            macro_last_cell = None
-            macro_drawing = False
-            print("[INFO] Patrol path cleared.")
+        if y >= PREVIEW_H + SLOTS_H:
+            if GRID_LEFT <= x < GRID_LEFT + GRID_PX and GRID_TOP <= y < GRID_TOP + GRID_PX:
+                macro_path_cells = []
+                macro_steps = []
+                macro_last_cell = None
+                macro_drawing = False
+                print("[INFO] Patrol path cleared.")
         elif y >= PREVIEW_H:
-            box_width = 80
-            box_spacing = 20
+            box_width = 100
+            box_spacing = 30
             start_x = (PREVIEW_W * 2 - (3 * box_width + 2 * box_spacing)) // 2
             
             for i in range(3):
@@ -520,25 +579,11 @@ def main():
 
     # Create unified window for preview, mask, and controls
     cv2.namedWindow(WIN_NAME, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(WIN_NAME, PREVIEW_W * 2, 800)
+    cv2.resizeWindow(WIN_NAME, PREVIEW_W * 2, PREVIEW_H + SLOTS_H + MACRO_H)
     cv2.setMouseCallback(WIN_NAME, mouse_callback)
-    
-    # Create trackbars for HSV tuning
-    cv2.createTrackbar("Low H", WIN_NAME, 8, 179, nothing)
-    cv2.createTrackbar("High H", WIN_NAME, 18, 179, nothing)
-    cv2.createTrackbar("Low S", WIN_NAME, 80, 255, nothing)
-    cv2.createTrackbar("High S", WIN_NAME, 255, 255, nothing)
-    cv2.createTrackbar("Low V", WIN_NAME, 40, 255, nothing)
-    cv2.createTrackbar("High V", WIN_NAME, 110, 255, nothing)
-    cv2.createTrackbar("Min Area", WIN_NAME, 1000, 5000, nothing)
-    cv2.createTrackbar("Smoothing", WIN_NAME, 3, 20, nothing)
-    cv2.createTrackbar("Click Speed (CPS)", WIN_NAME, 0, 50, nothing)
-    cv2.createTrackbar("ms/cell", WIN_NAME, 100, 500, nothing)
 
-    # Only show display toggle slider if there is more than 1 display detected
-    show_monitor_slider = num_monitors > 1
-    if show_monitor_slider:
-        cv2.createTrackbar("Monitor", WIN_NAME, 0, num_monitors - 1, nothing)
+    if num_monitors > 1:
+        sliders["Monitor"]["max"] = num_monitors - 1
 
     hover_labels = [
         {"prefix": "Low H:", "name": "Low H", "desc": "Low limit for Hue (color type). Warm brown tones usually start around 5."},
@@ -573,12 +618,8 @@ def main():
         except cv2.error:
             break
 
-        if show_monitor_slider:
-            selected_monitor = cv2.getTrackbarPos("Monitor", WIN_NAME)
-        else:
-            selected_monitor = 0
-
         # Handle screen transition logic
+        selected_monitor = get_val("Monitor") if num_monitors > 1 else 0
         if selected_monitor != current_monitor:
             print(f"[INFO] Switching capture source to Monitor {selected_monitor}...")
             if DXCAM_AVAILABLE:
@@ -637,31 +678,31 @@ def main():
                     hsv_crop = hsv[y_start:y_end, x_start:x_end]
                     min_h, max_h, min_s, max_s, min_v, max_v = calibrate_color_range(hsv_crop)
                     
-                    cv2.setTrackbarPos("Low H", WIN_NAME, min_h)
-                    cv2.setTrackbarPos("High H", WIN_NAME, max_h)
-                    cv2.setTrackbarPos("Low S", WIN_NAME, min_s)
-                    cv2.setTrackbarPos("High S", WIN_NAME, max_s)
-                    cv2.setTrackbarPos("Low V", WIN_NAME, min_v)
-                    cv2.setTrackbarPos("High V", WIN_NAME, max_v)
+                    set_val("Low H", min_h)
+                    set_val("High H", max_h)
+                    set_val("Low S", min_s)
+                    set_val("High S", max_s)
+                    set_val("Low V", min_v)
+                    set_val("High V", max_v)
                     
                     color_slots[selected_slot]["hsv"] = (min_h, max_h, min_s, max_s, min_v, max_v)
                     print(f"[SUCCESS] Calibrated Slot {selected_slot+1} from crop selection: H={min_h}-{max_h}, S={min_s}-{max_s}, V={min_v}-{max_v}")
             calibrate_request = False
 
-        # Read current trackbar positions
-        l_h = cv2.getTrackbarPos("Low H", WIN_NAME)
-        h_h = cv2.getTrackbarPos("High H", WIN_NAME)
-        l_s = cv2.getTrackbarPos("Low S", WIN_NAME)
-        h_s = cv2.getTrackbarPos("High S", WIN_NAME)
-        l_v = cv2.getTrackbarPos("Low V", WIN_NAME)
-        h_v = cv2.getTrackbarPos("High V", WIN_NAME)
+        # Read current slider positions
+        l_h = get_val("Low H")
+        h_h = get_val("High H")
+        l_s = get_val("Low S")
+        h_s = get_val("High S")
+        l_v = get_val("Low V")
+        h_v = get_val("High V")
         
         # Save to currently selected slot
         color_slots[selected_slot]["hsv"] = (l_h, h_h, l_s, h_s, l_v, h_v)
 
-        min_area = cv2.getTrackbarPos("Min Area", WIN_NAME)
-        smoothing = max(1, cv2.getTrackbarPos("Smoothing", WIN_NAME))
-        cps = cv2.getTrackbarPos("Click Speed (CPS)", WIN_NAME)
+        min_area = get_val("Min Area")
+        smoothing = max(1, get_val("Smoothing"))
+        cps = get_val("Click Speed (CPS)")
         
         # Combine masks for all active color slots
         mask = None
@@ -871,18 +912,17 @@ def main():
         cv2.line(top_canvas, (PREVIEW_W, 0), (PREVIEW_W, PREVIEW_H), (80, 80, 80), 2)
 
         # Build bottom panel for color slots
-        bottom_h = 60
-        bottom_panel = np.zeros((bottom_h, PREVIEW_W * 2, 3), dtype=np.uint8)
-        cv2.putText(bottom_panel, "Color Targets (Left-click to select, Right-click to clear):", (10, 35),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        bottom_panel = np.zeros((SLOTS_H, PREVIEW_W * 2, 3), dtype=np.uint8)
+        cv2.putText(bottom_panel, "Color Targets:", (20, 32),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, (200, 200, 200), 1)
                     
-        box_width = 80
-        box_spacing = 20
+        box_width = 100
+        box_spacing = 30
         start_x = (PREVIEW_W * 2 - (3 * box_width + 2 * box_spacing)) // 2
         
         for i in range(3):
             box_x = start_x + i * (box_width + box_spacing)
-            box_y = 10
+            box_y = 6
             
             # Fill color logic
             if color_slots[i]["active"]:
@@ -893,51 +933,92 @@ def main():
                 
                 bgr_color = cv2.cvtColor(np.uint8([[[avg_h, avg_s, avg_v]]]), cv2.COLOR_HSV2BGR)[0][0]
                 bgr_color = (int(bgr_color[0]), int(bgr_color[1]), int(bgr_color[2]))
-                cv2.rectangle(bottom_panel, (box_x, box_y), (box_x + box_width, box_y + 40), bgr_color, -1)
+                cv2.rectangle(bottom_panel, (box_x, box_y), (box_x + box_width, box_y + 36), bgr_color, -1)
             else:
-                cv2.rectangle(bottom_panel, (box_x, box_y), (box_x + box_width, box_y + 40), (40, 40, 40), -1)
-                cv2.putText(bottom_panel, "EMPTY", (box_x + 18, box_y + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 150), 1)
+                cv2.rectangle(bottom_panel, (box_x, box_y), (box_x + box_width, box_y + 36), (40, 40, 40), -1)
+                cv2.putText(bottom_panel, "EMPTY", (box_x + 24, box_y + 23), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 150), 1)
             
             # Border
             border_color = (0, 255, 255) if i == selected_slot else (100, 100, 100)
             border_thickness = 2 if i == selected_slot else 1
-            cv2.rectangle(bottom_panel, (box_x, box_y), (box_x + box_width, box_y + 40), border_color, border_thickness)
+            cv2.rectangle(bottom_panel, (box_x, box_y), (box_x + box_width, box_y + 36), border_color, border_thickness)
 
-        # Build movement macro panel (300px height)
-        macro_h = 300
-        macro_panel = np.full((macro_h, PREVIEW_W * 2, 3), (35, 35, 35), dtype=np.uint8)
+        # Build movement macro panel (three-column layout: Sliders | Controls | Grid & Steps)
+        macro_panel = np.full((MACRO_H, PREVIEW_W * 2, 3), (28, 28, 28), dtype=np.uint8)
 
-        cv2.putText(macro_panel, "PATROL MACRO (Draw path on grid | F5 Start/Stop | Right-click to clear)", (15, 22),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
+        # Column Dividers
+        cv2.line(macro_panel, (510, 0), (510, MACRO_H), (60, 60, 60), 1)
+        cv2.line(macro_panel, (1050, 0), (1050, MACRO_H), (60, 60, 60), 1)
 
-        grid_local_x = GRID_LEFT
-        grid_local_y = 30
+        # Column 1: Custom Dark Sliders
+        cv2.putText(macro_panel, "PARAMETER TUNING", (30, 24),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
 
-        # Draw 9x9 grid
-        for i in range(GRID_SIZE + 1):
-            gx = grid_local_x + i * CELL_SIZE
-            gy = grid_local_y + i * CELL_SIZE
-            cv2.line(macro_panel, (gx, grid_local_y), (gx, grid_local_y + GRID_PX), (80, 80, 80), 1)
-            cv2.line(macro_panel, (grid_local_x, gy), (grid_local_x + GRID_PX, gy), (80, 80, 80), 1)
-        cv2.rectangle(macro_panel, (grid_local_x, grid_local_y), (grid_local_x + GRID_PX, grid_local_y + GRID_PX), (120, 120, 120), 2)
+        for name, lx, ly, sw in SLIDER_LAYOUT:
+            info = sliders[name]
+            val = info["val"]
+            min_v, max_v = info["min"], info["max"]
+            ratio = (val - min_v) / float(max_v - min_v) if max_v > min_v else 0.0
 
-        ms_per_cell = max(10, cv2.getTrackbarPos("ms/cell", WIN_NAME))
+            cv2.putText(macro_panel, f"{name}: {val}", (lx, ly - 6),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, (220, 220, 220), 1)
+            cv2.line(macro_panel, (lx, ly), (lx + sw, ly), (60, 60, 60), 3)
+            fill_w = int(ratio * sw)
+            if fill_w > 0:
+                cv2.line(macro_panel, (lx, ly), (lx + fill_w, ly), (0, 200, 255), 3)
+            knob_x = lx + fill_w
+            cv2.circle(macro_panel, (knob_x, ly), 5, (0, 255, 255), -1)
+            cv2.circle(macro_panel, (knob_x, ly), 6, (255, 255, 255), 1)
 
-        # Draw freeform path on grid
+        # Column 2: Patrol Macro Controls & Status
+        mid_x = 530
+        cv2.putText(macro_panel, "PATROL MACRO CONTROLS", (mid_x, 24),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+        cv2.putText(macro_panel, "1. Drag path on 9x9 grid (right)", (mid_x, 58),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 180), 1)
+        cv2.putText(macro_panel, "2. Right-click grid to clear path", (mid_x, 85),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 180), 1)
+        cv2.putText(macro_panel, "3. Adjust ms/cell slider on left", (mid_x, 112),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 180), 1)
+        cv2.putText(macro_panel, "4. Press F5 to Start / Stop macro", (mid_x, 139),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 180), 1)
+
+        ms_per_cell = max(10, get_val("ms/cell"))
+
         display_path = macro_path_cells
         display_steps = macro_steps if not macro_drawing else path_to_steps(macro_path_cells)
 
+        if macro_running:
+            step_text = display_steps[macro_current_step][2] if 0 <= macro_current_step < len(display_steps) else "..."
+            cv2.putText(macro_panel, "STATUS: MACRO ACTIVE (F5 to Stop)", (mid_x, 180),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 0, 255), 2)
+            cv2.putText(macro_panel, f"Active Step: {step_text}", (mid_x, 208),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 255, 0), 1)
+        elif display_steps:
+            cv2.putText(macro_panel, "STATUS: READY (F5 to Start)", (mid_x, 180),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 255, 0), 1)
+        else:
+            cv2.putText(macro_panel, "STATUS: NO PATH DRAWN", (mid_x, 180),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.46, (120, 120, 120), 1)
+
+        # Column 3: 9x9 Grid & Sequence List
+        grid_local_x = GRID_LEFT   # relative to macro_panel full width
+        grid_local_y = GRID_TOP - (PREVIEW_H + SLOTS_H)  # relative to macro_panel
+
+        for i in range(GRID_SIZE + 1):
+            gx = grid_local_x + i * CELL_SIZE
+            gy = grid_local_y + i * CELL_SIZE
+            cv2.line(macro_panel, (gx, grid_local_y), (gx, grid_local_y + GRID_PX), (70, 70, 70), 1)
+            cv2.line(macro_panel, (grid_local_x, gy), (grid_local_x + GRID_PX, gy), (70, 70, 70), 1)
+        cv2.rectangle(macro_panel, (grid_local_x, grid_local_y), (grid_local_x + GRID_PX, grid_local_y + GRID_PX), (120, 120, 120), 2)
+
         if len(display_path) >= 2:
-            # Build step index for each cell transition (for coloring)
             step_idx_for_segment = []
             temp_steps = path_to_steps(display_path)
-            seg = 0
-            cell_count = 0
             for si, (sc, n, lbl) in enumerate(temp_steps):
                 for _ in range(n):
                     step_idx_for_segment.append((si, lbl))
 
-            # Draw path segments between consecutive cell centers
             for i in range(len(display_path) - 1):
                 c1, r1 = display_path[i]
                 c2, r2 = display_path[i + 1]
@@ -946,71 +1027,40 @@ def main():
                 px2 = grid_local_x + c2 * CELL_SIZE + CELL_SIZE // 2
                 py2 = grid_local_y + r2 * CELL_SIZE + CELL_SIZE // 2
 
-                # Color by direction
                 if i < len(step_idx_for_segment):
                     si, lbl = step_idx_for_segment[i]
                     color = DIR_COLORS.get(lbl, (200, 200, 200))
-                    thickness = 4 if macro_current_step == si else 2
+                    thickness = 3 if macro_current_step == si else 2
                 else:
                     color = (200, 200, 200)
                     thickness = 2
 
                 cv2.arrowedLine(macro_panel, (px1, py1), (px2, py2), color, thickness, tipLength=0.35)
 
-            # Draw start marker
             sc, sr = display_path[0]
             sx = grid_local_x + sc * CELL_SIZE + CELL_SIZE // 2
             sy = grid_local_y + sr * CELL_SIZE + CELL_SIZE // 2
-            cv2.circle(macro_panel, (sx, sy), 6, (0, 255, 0), -1)
-            cv2.circle(macro_panel, (sx, sy), 8, (255, 255, 255), 1)
+            cv2.circle(macro_panel, (sx, sy), 5, (0, 255, 0), -1)
+            cv2.circle(macro_panel, (sx, sy), 7, (255, 255, 255), 1)
 
-        # Instructions
-        left_x = 20
-        cv2.putText(macro_panel, "WASD Path Macro", (left_x, 60),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
-        cv2.putText(macro_panel, "1. Draw path on grid", (left_x, 85),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, (180, 180, 180), 1)
-        cv2.putText(macro_panel, "   (drag in any direction)", (left_x, 105),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (140, 140, 140), 1)
-        cv2.putText(macro_panel, "2. Set 'ms/cell' trackbar", (left_x, 130),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, (180, 180, 180), 1)
-        cv2.putText(macro_panel, "3. Press F5 to Start/Stop", (left_x, 155),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, (180, 180, 180), 1)
-
-        if macro_running:
-            step_text = display_steps[macro_current_step][2] if 0 <= macro_current_step < len(display_steps) else "..."
-            cv2.putText(macro_panel, "STATUS: MACRO ACTIVE", (left_x, 200),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 0, 255), 2)
-            cv2.putText(macro_panel, f"Step: {step_text}", (left_x, 225),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1)
-        elif display_steps:
-            cv2.putText(macro_panel, "STATUS: READY (F5 to Start)", (left_x, 200),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 0), 1)
-        else:
-            cv2.putText(macro_panel, "STATUS: NO PATH DRAWN", (left_x, 200),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.48, (120, 120, 120), 1)
-
-        # Step list display on the right
-        right_x = 800
-        cv2.putText(macro_panel, "Step Sequence:", (right_x, 60),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        seq_x = grid_local_x + GRID_PX + 25
+        cv2.putText(macro_panel, "Step Sequence:", (seq_x, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
 
         if display_steps:
-            total_ms = 0
-            max_display = 7  # Show at most 7 steps to fit in the panel
+            max_display = 7
             for i, (sc, n, lbl) in enumerate(display_steps[:max_display]):
                 dur = n * ms_per_cell
-                total_ms += dur
                 color = DIR_COLORS.get(lbl, (200, 200, 200))
                 marker = ">" if macro_current_step == i else " "
-                cv2.putText(macro_panel, f"{marker} {i+1}. {lbl}  {dur}ms ({n} cells)", (right_x, 85 + i * 22),
+                cv2.putText(macro_panel, f"{marker}{i+1}. {lbl} {dur}ms", (seq_x, 54 + i * 20),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.38, color, 1)
             if len(display_steps) > max_display:
-                cv2.putText(macro_panel, f"  ... +{len(display_steps) - max_display} more steps", (right_x, 85 + max_display * 22),
+                cv2.putText(macro_panel, f"  +{len(display_steps) - max_display} more", (seq_x, 54 + max_display * 20),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.35, (140, 140, 140), 1)
             total_ms = sum(s[1] * ms_per_cell for s in display_steps)
-            cv2.putText(macro_panel, f"Total Cycle: {total_ms}ms ({total_ms/1000:.2f}s)", (right_x, 270),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
+            cv2.putText(macro_panel, f"Cycle: {total_ms}ms ({total_ms/1000:.2f}s)", (seq_x, 218),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 255, 255), 1)
 
         # Vertically stack top_canvas, bottom_panel, and macro_panel
         canvas = np.vstack((top_canvas, bottom_panel, macro_panel))
@@ -1069,4 +1119,9 @@ def main():
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        release_all_keys()
+        cv2.destroyAllWindows()
+        print("\n[INFO] Exited cleanly via Ctrl+C.")
