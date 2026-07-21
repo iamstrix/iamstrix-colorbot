@@ -163,10 +163,10 @@ color_slots = [
 selected_slot = 0
 
 # Movement Macro State
-macro_rect_start = None
-macro_rect_end = None
 macro_drawing = False
-macro_rect_cells = None
+macro_path_cells = []       # List of (col, row) cells in the drawn path
+macro_last_cell = None      # Last cell registered during drag
+macro_steps = []            # List of (scan_code, num_cells, label) after path finalized
 
 macro_running = False
 macro_thread = None
@@ -174,10 +174,62 @@ macro_stop_event = None
 macro_current_step = -1
 
 GRID_SIZE = 9
-CELL_SIZE = 26
-GRID_PX = GRID_SIZE * CELL_SIZE  # 234px
-GRID_LEFT = (640 * 2 - GRID_PX) // 2  # 523
-GRID_TOP = 420 + 30  # 450
+CELL_SIZE = 30
+GRID_PX = GRID_SIZE * CELL_SIZE  # 270px
+GRID_LEFT = (640 * 2 - GRID_PX) // 2
+GRID_TOP = 420 + 30
+
+# Direction mapping: (delta_col, delta_row) -> (scan_code, label)
+DIR_MAP = {
+    (0, -1): (SCAN_W, "W (Up)"),
+    (1, 0):  (SCAN_D, "D (Right)"),
+    (0, 1):  (SCAN_S, "S (Down)"),
+    (-1, 0): (SCAN_A, "A (Left)"),
+}
+DIR_COLORS = {
+    "W (Up)":    (0, 200, 0),
+    "D (Right)": (200, 200, 0),
+    "S (Down)":  (0, 100, 255),
+    "A (Left)":  (200, 0, 200),
+}
+
+def path_to_steps(path_cells):
+    """Convert a list of (col, row) cells into merged directional steps."""
+    if len(path_cells) < 2:
+        return []
+    steps = []
+    prev = path_cells[0]
+    for cell in path_cells[1:]:
+        dc = cell[0] - prev[0]
+        dr = cell[1] - prev[1]
+        info = DIR_MAP.get((dc, dr))
+        if info is None:
+            prev = cell
+            continue
+        scan, label = info
+        if steps and steps[-1][2] == label:
+            steps[-1] = (steps[-1][0], steps[-1][1] + 1, steps[-1][2])
+        else:
+            steps.append((scan, 1, label))
+        prev = cell
+    return steps
+
+def trace_orthogonal(from_cell, to_cell):
+    """Trace an orthogonal path from from_cell to to_cell, one cell at a time."""
+    cells = []
+    curr = list(from_cell)
+    target = list(to_cell)
+    while curr != target:
+        dc = target[0] - curr[0]
+        dr = target[1] - curr[1]
+        if abs(dc) >= abs(dr) and dc != 0:
+            curr[0] += 1 if dc > 0 else -1
+        elif dr != 0:
+            curr[1] += 1 if dr > 0 else -1
+        else:
+            break
+        cells.append(tuple(curr))
+    return cells
 
 # Preview panel dimensions within the composited canvas
 PREVIEW_W = 640
@@ -188,7 +240,7 @@ def mouse_callback(event, x, y, flags, param):
     global drag_start, drag_end, drawing_rect, calibrate_request
     global lock_area_start, lock_area_end, drawing_lock_area, lock_area_active
     global color_slots, selected_slot
-    global macro_rect_start, macro_rect_end, macro_drawing, macro_rect_cells
+    global macro_drawing, macro_path_cells, macro_last_cell, macro_steps
     
     if event == cv2.EVENT_MOUSEMOVE:
         mouse_x = x
@@ -197,10 +249,18 @@ def mouse_callback(event, x, y, flags, param):
             drag_end = (x, y)
         elif drawing_lock_area:
             lock_area_end = (x, y)
-        elif macro_drawing:
-            col = max(0, min(GRID_SIZE - 1, (x - GRID_LEFT) // CELL_SIZE))
-            row = max(0, min(GRID_SIZE - 1, (y - GRID_TOP) // CELL_SIZE))
-            macro_rect_end = (col, row)
+        elif macro_drawing and macro_last_cell is not None:
+            # Track freeform path through grid cells
+            gx = x - GRID_LEFT
+            gy = y - GRID_TOP
+            if 0 <= gx < GRID_PX and 0 <= gy < GRID_PX:
+                col = max(0, min(GRID_SIZE - 1, gx // CELL_SIZE))
+                row = max(0, min(GRID_SIZE - 1, gy // CELL_SIZE))
+                curr = (col, row)
+                if curr != macro_last_cell:
+                    new_cells = trace_orthogonal(macro_last_cell, curr)
+                    macro_path_cells.extend(new_cells)
+                    macro_last_cell = curr
             
     elif event == cv2.EVENT_LBUTTONDOWN:
         # Check if click is in Movement Macro Grid panel (y >= 420)
@@ -208,8 +268,9 @@ def mouse_callback(event, x, y, flags, param):
             if GRID_LEFT <= x < GRID_LEFT + GRID_PX and GRID_TOP <= y < GRID_TOP + GRID_PX:
                 col = (x - GRID_LEFT) // CELL_SIZE
                 row = (y - GRID_TOP) // CELL_SIZE
-                macro_rect_start = (col, row)
-                macro_rect_end = (col, row)
+                macro_path_cells = [(col, row)]
+                macro_last_cell = (col, row)
+                macro_steps = []
                 macro_drawing = True
         # Check if click is on the color slots panel (360 <= y < 420)
         elif y >= PREVIEW_H:
@@ -243,32 +304,23 @@ def mouse_callback(event, x, y, flags, param):
             drawing_rect = False
             calibrate_request = True
         elif macro_drawing:
-            col = max(0, min(GRID_SIZE - 1, (x - GRID_LEFT) // CELL_SIZE))
-            row = max(0, min(GRID_SIZE - 1, (y - GRID_TOP) // CELL_SIZE))
-            macro_rect_end = (col, row)
             macro_drawing = False
-
-            c1, r1 = macro_rect_start
-            c2, r2 = macro_rect_end
-            min_c, max_c = min(c1, c2), max(c1, c2)
-            min_r, max_r = min(r1, r2), max(r1, r2)
-            w = max_c - min_c + 1
-            h = max_r - min_r + 1
-
-            if w >= 2 and h >= 2:
-                macro_rect_cells = (min_c, min_r, max_c, max_r)
-                print(f"[SUCCESS] Patrol macro rectangle set: {w} cells wide x {h} cells tall")
+            macro_steps = path_to_steps(macro_path_cells)
+            if macro_steps:
+                total_cells = sum(s[1] for s in macro_steps)
+                print(f"[SUCCESS] Path drawn: {len(macro_steps)} steps, {total_cells} cells, {len(macro_path_cells)} waypoints")
+                for i, (sc, n, lbl) in enumerate(macro_steps):
+                    print(f"  Step {i+1}: {lbl} x{n} cells")
             else:
-                macro_rect_cells = None
-                print("[INFO] Rectangle too small (need at least 2x2).")
+                print("[INFO] Path too short. Draw across at least 2 cells.")
             
     elif event == cv2.EVENT_RBUTTONDOWN:
         if y >= 420:
-            macro_rect_cells = None
-            macro_rect_start = None
-            macro_rect_end = None
+            macro_path_cells = []
+            macro_steps = []
+            macro_last_cell = None
             macro_drawing = False
-            print("[INFO] Patrol macro rectangle cleared.")
+            print("[INFO] Patrol path cleared.")
         elif y >= PREVIEW_H:
             box_width = 80
             box_spacing = 20
@@ -390,20 +442,12 @@ def calibrate_color_range(hsv_crop):
     max_v = min(255, max_v + 15)
     
     return min_h, max_h, min_s, max_s, min_v, max_v
-def macro_loop(w_cells, h_cells, ms_per_cell, stop_event):
+def macro_loop(steps, ms_per_cell, stop_event):
+    """Loops through a list of (scan_code, num_cells, label) steps."""
     global macro_current_step
-    steps = [
-        (SCAN_W, h_cells, "W (Up)"),
-        (SCAN_D, w_cells, "D (Right)"),
-        (SCAN_S, h_cells, "S (Down)"),
-        (SCAN_A, w_cells, "A (Left)")
-    ]
-    w_dur = h_cells * ms_per_cell
-    d_dur = w_cells * ms_per_cell
-    s_dur = h_cells * ms_per_cell
-    a_dur = w_cells * ms_per_cell
-    total = w_dur + d_dur + s_dur + a_dur
-    print(f"[MACRO] Starting patrol loop: W={w_dur}ms, D={d_dur}ms, S={s_dur}ms, A={a_dur}ms | Cycle={total}ms ({total/1000:.1f}s)")
+    total = sum(s[1] * ms_per_cell for s in steps)
+    step_summary = " -> ".join(f"{s[2]}:{s[1]*ms_per_cell}ms" for s in steps)
+    print(f"[MACRO] Starting path loop: {step_summary} | Cycle={total}ms ({total/1000:.1f}s)")
 
     try:
         while not stop_event.is_set():
@@ -427,7 +471,7 @@ def main():
     global lock_area_start, lock_area_end, drawing_lock_area, lock_area_active
     global color_slots, selected_slot
     global macro_running, macro_thread, macro_stop_event, macro_current_step
-    global macro_rect_start, macro_rect_end, macro_drawing, macro_rect_cells
+    global macro_drawing, macro_path_cells, macro_last_cell, macro_steps
     
     set_dpi_awareness()
     
@@ -863,12 +907,13 @@ def main():
         macro_h = 300
         macro_panel = np.full((macro_h, PREVIEW_W * 2, 3), (35, 35, 35), dtype=np.uint8)
 
-        cv2.putText(macro_panel, "PATROL MACRO (Press F5 to Start/Stop | Right-click grid to clear)", (15, 22),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 255), 1)
+        cv2.putText(macro_panel, "PATROL MACRO (Draw path on grid | F5 Start/Stop | Right-click to clear)", (15, 22),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
 
         grid_local_x = GRID_LEFT
         grid_local_y = 30
 
+        # Draw 9x9 grid
         for i in range(GRID_SIZE + 1):
             gx = grid_local_x + i * CELL_SIZE
             gy = grid_local_y + i * CELL_SIZE
@@ -878,90 +923,94 @@ def main():
 
         ms_per_cell = max(10, cv2.getTrackbarPos("ms/cell", WIN_NAME))
 
-        def draw_grid_rect(panel, min_c, min_r, max_c, max_r, is_preview=False):
-            px1 = grid_local_x + min_c * CELL_SIZE
-            py1 = grid_local_y + min_r * CELL_SIZE
-            px2 = grid_local_x + (max_c + 1) * CELL_SIZE
-            py2 = grid_local_y + (max_r + 1) * CELL_SIZE
+        # Draw freeform path on grid
+        display_path = macro_path_cells
+        display_steps = macro_steps if not macro_drawing else path_to_steps(macro_path_cells)
 
-            overlay = panel.copy()
-            fill_color = (80, 130, 80) if not is_preview else (100, 180, 100)
-            cv2.rectangle(overlay, (px1, py1), (px2, py2), fill_color, -1)
-            cv2.addWeighted(overlay, 0.25, panel, 0.75, 0, panel)
+        if len(display_path) >= 2:
+            # Build step index for each cell transition (for coloring)
+            step_idx_for_segment = []
+            temp_steps = path_to_steps(display_path)
+            seg = 0
+            cell_count = 0
+            for si, (sc, n, lbl) in enumerate(temp_steps):
+                for _ in range(n):
+                    step_idx_for_segment.append((si, lbl))
 
-            step_colors = [(0, 200, 0), (200, 200, 0), (0, 100, 255), (200, 0, 200)]
-            edges = [
-                ((px1, py2), (px1, py1), 0),
-                ((px1, py1), (px2, py1), 1),
-                ((px2, py1), (px2, py2), 2),
-                ((px2, py2), (px1, py2), 3),
-            ]
-            for (p1, p2, step_idx) in edges:
-                color = step_colors[step_idx]
-                thickness = 4 if macro_current_step == step_idx else 2
-                cv2.line(panel, p1, p2, color, thickness)
+            # Draw path segments between consecutive cell centers
+            for i in range(len(display_path) - 1):
+                c1, r1 = display_path[i]
+                c2, r2 = display_path[i + 1]
+                px1 = grid_local_x + c1 * CELL_SIZE + CELL_SIZE // 2
+                py1 = grid_local_y + r1 * CELL_SIZE + CELL_SIZE // 2
+                px2 = grid_local_x + c2 * CELL_SIZE + CELL_SIZE // 2
+                py2 = grid_local_y + r2 * CELL_SIZE + CELL_SIZE // 2
 
-        if macro_drawing and macro_rect_start and macro_rect_end:
-            c1, r1 = macro_rect_start
-            c2, r2 = macro_rect_end
-            min_c, max_c = min(c1, c2), max(c1, c2)
-            min_r, max_r = min(r1, r2), max(r1, r2)
-            draw_grid_rect(macro_panel, min_c, min_r, max_c, max_r, is_preview=True)
+                # Color by direction
+                if i < len(step_idx_for_segment):
+                    si, lbl = step_idx_for_segment[i]
+                    color = DIR_COLORS.get(lbl, (200, 200, 200))
+                    thickness = 4 if macro_current_step == si else 2
+                else:
+                    color = (200, 200, 200)
+                    thickness = 2
 
-        if macro_rect_cells and not macro_drawing:
-            min_c, min_r, max_c, max_r = macro_rect_cells
-            draw_grid_rect(macro_panel, min_c, min_r, max_c, max_r, is_preview=False)
+                cv2.arrowedLine(macro_panel, (px1, py1), (px2, py2), color, thickness, tipLength=0.35)
 
+            # Draw start marker
+            sc, sr = display_path[0]
+            sx = grid_local_x + sc * CELL_SIZE + CELL_SIZE // 2
+            sy = grid_local_y + sr * CELL_SIZE + CELL_SIZE // 2
+            cv2.circle(macro_panel, (sx, sy), 6, (0, 255, 0), -1)
+            cv2.circle(macro_panel, (sx, sy), 8, (255, 255, 255), 1)
+
+        # Instructions
         left_x = 20
-        cv2.putText(macro_panel, "WASD Patrol Macro", (left_x, 60),
+        cv2.putText(macro_panel, "WASD Path Macro", (left_x, 60),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
-        cv2.putText(macro_panel, "1. Drag rectangle on grid", (left_x, 90),
+        cv2.putText(macro_panel, "1. Draw path on grid", (left_x, 85),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.38, (180, 180, 180), 1)
-        cv2.putText(macro_panel, "2. Set 'ms/cell' trackbar", (left_x, 115),
+        cv2.putText(macro_panel, "   (drag in any direction)", (left_x, 105),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (140, 140, 140), 1)
+        cv2.putText(macro_panel, "2. Set 'ms/cell' trackbar", (left_x, 130),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.38, (180, 180, 180), 1)
-        cv2.putText(macro_panel, "3. Press F5 to Start/Stop", (left_x, 140),
+        cv2.putText(macro_panel, "3. Press F5 to Start/Stop", (left_x, 155),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.38, (180, 180, 180), 1)
 
-        step_labels = ["W (Up)", "D (Right)", "S (Down)", "A (Left)"]
         if macro_running:
-            step_text = step_labels[macro_current_step] if 0 <= macro_current_step < 4 else "..."
-            cv2.putText(macro_panel, "STATUS: MACRO ACTIVE", (left_x, 190),
+            step_text = display_steps[macro_current_step][2] if 0 <= macro_current_step < len(display_steps) else "..."
+            cv2.putText(macro_panel, "STATUS: MACRO ACTIVE", (left_x, 200),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 0, 255), 2)
-            cv2.putText(macro_panel, f"Active: {step_text}", (left_x, 215),
+            cv2.putText(macro_panel, f"Step: {step_text}", (left_x, 225),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1)
-        elif macro_rect_cells:
-            cv2.putText(macro_panel, "STATUS: READY (F5 to Start)", (left_x, 190),
+        elif display_steps:
+            cv2.putText(macro_panel, "STATUS: READY (F5 to Start)", (left_x, 200),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 0), 1)
         else:
-            cv2.putText(macro_panel, "STATUS: NO PATH DRAWN", (left_x, 190),
+            cv2.putText(macro_panel, "STATUS: NO PATH DRAWN", (left_x, 200),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.48, (120, 120, 120), 1)
 
+        # Step list display on the right
         right_x = 800
-        cv2.putText(macro_panel, "Patrol Step Durations:", (right_x, 60),
+        cv2.putText(macro_panel, "Step Sequence:", (right_x, 60),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
-        if macro_rect_cells:
-            min_c, min_r, max_c, max_r = macro_rect_cells
-            w_cells = max_c - min_c + 1
-            h_cells = max_r - min_r + 1
-            w_dur = h_cells * ms_per_cell
-            d_dur = w_cells * ms_per_cell
-            s_dur = h_cells * ms_per_cell
-            a_dur = w_cells * ms_per_cell
-            total_cycle = 2 * (w_cells + h_cells) * ms_per_cell
-
-            step_colors = [(0, 200, 0), (200, 200, 0), (0, 100, 255), (200, 0, 200)]
-            cv2.putText(macro_panel, f"W (Up):    {w_dur} ms ({h_cells} cells)", (right_x, 95),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, step_colors[0], 1)
-            cv2.putText(macro_panel, f"D (Right): {d_dur} ms ({w_cells} cells)", (right_x, 125),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, step_colors[1], 1)
-            cv2.putText(macro_panel, f"S (Down):  {s_dur} ms ({h_cells} cells)", (right_x, 155),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, step_colors[2], 1)
-            cv2.putText(macro_panel, f"A (Left):  {a_dur} ms ({w_cells} cells)", (right_x, 185),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, step_colors[3], 1)
-
-            cv2.putText(macro_panel, f"Total Cycle: {total_cycle} ms ({total_cycle/1000:.2f} s)", (right_x, 225),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 255), 1)
+        if display_steps:
+            total_ms = 0
+            max_display = 7  # Show at most 7 steps to fit in the panel
+            for i, (sc, n, lbl) in enumerate(display_steps[:max_display]):
+                dur = n * ms_per_cell
+                total_ms += dur
+                color = DIR_COLORS.get(lbl, (200, 200, 200))
+                marker = ">" if macro_current_step == i else " "
+                cv2.putText(macro_panel, f"{marker} {i+1}. {lbl}  {dur}ms ({n} cells)", (right_x, 85 + i * 22),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.38, color, 1)
+            if len(display_steps) > max_display:
+                cv2.putText(macro_panel, f"  ... +{len(display_steps) - max_display} more steps", (right_x, 85 + max_display * 22),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.35, (140, 140, 140), 1)
+            total_ms = sum(s[1] * ms_per_cell for s in display_steps)
+            cv2.putText(macro_panel, f"Total Cycle: {total_ms}ms ({total_ms/1000:.2f}s)", (right_x, 270),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
 
         # Vertically stack top_canvas, bottom_panel, and macro_panel
         canvas = np.vstack((top_canvas, bottom_panel, macro_panel))
@@ -975,21 +1024,17 @@ def main():
 
         if f5_is_down and not f5_was_down:
             if not macro_running:
-                if macro_rect_cells:
-                    min_c, min_r, max_c, max_r = macro_rect_cells
-                    w_cells = max_c - min_c + 1
-                    h_cells = max_r - min_r + 1
-
+                if macro_steps:
                     macro_stop_event = threading.Event()
                     macro_running = True
                     macro_thread = threading.Thread(
                         target=macro_loop,
-                        args=(w_cells, h_cells, ms_per_cell, macro_stop_event),
+                        args=(list(macro_steps), ms_per_cell, macro_stop_event),
                         daemon=True
                     )
                     macro_thread.start()
                 else:
-                    print("[WARNING] No patrol rectangle drawn. Draw one on the 9x9 grid first!")
+                    print("[WARNING] No path drawn. Draw a path on the 9x9 grid first!")
             else:
                 if macro_stop_event:
                     macro_stop_event.set()
