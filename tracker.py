@@ -7,6 +7,7 @@ import win32api
 import win32gui
 import win32con
 import ctypes
+import threading
 
 # Attempt to import dxcam for ultra-high FPS DirectX capture
 DXCAM_AVAILABLE = False
@@ -36,9 +37,27 @@ class MouseInput(ctypes.Structure):
         ("dwExtraInfo", PUL)
     ]
 
+class KeyboardInput(ctypes.Structure):
+    _fields_ = [
+        ("wVk", ctypes.c_ushort),
+        ("wScan", ctypes.c_ushort),
+        ("dwFlags", ctypes.c_ulong),
+        ("time", ctypes.c_ulong),
+        ("dwExtraInfo", PUL)
+    ]
+
+class HardwareInput(ctypes.Structure):
+    _fields_ = [
+        ("uMsg", ctypes.c_ulong),
+        ("wParamL", ctypes.c_short),
+        ("wParamH", ctypes.c_ushort)
+    ]
+
 class Input_I(ctypes.Union):
     _fields_ = [
-        ("mi", MouseInput)
+        ("mi", MouseInput),
+        ("ki", KeyboardInput),
+        ("hi", HardwareInput)
     ]
 
 class Input(ctypes.Structure):
@@ -107,6 +126,34 @@ lock_area_end = None
 drawing_lock_area = False
 lock_area_active = False
 
+# Keyboard Scan Codes for WASD
+SCAN_W = 0x11
+SCAN_A = 0x1E
+SCAN_S = 0x1F
+SCAN_D = 0x20
+
+INPUT_KEYBOARD = 1
+KEYEVENTF_SCANCODE = 0x0008
+KEYEVENTF_KEYUP = 0x0002
+
+def press_key(scan_code):
+    event = Input()
+    event.type = INPUT_KEYBOARD
+    event.ii.ki.wScan = scan_code
+    event.ii.ki.dwFlags = KEYEVENTF_SCANCODE
+    ctypes.windll.user32.SendInput(1, ctypes.byref(event), ctypes.sizeof(Input))
+
+def release_key(scan_code):
+    event = Input()
+    event.type = INPUT_KEYBOARD
+    event.ii.ki.wScan = scan_code
+    event.ii.ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP
+    ctypes.windll.user32.SendInput(1, ctypes.byref(event), ctypes.sizeof(Input))
+
+def release_all_keys():
+    for sc in [SCAN_W, SCAN_A, SCAN_S, SCAN_D]:
+        release_key(sc)
+
 # Multi-color targeting state
 color_slots = [
     {"active": True, "hsv": (8, 18, 80, 255, 40, 110)},
@@ -114,6 +161,75 @@ color_slots = [
     {"active": False, "hsv": (0, 0, 0, 255, 0, 255)}
 ]
 selected_slot = 0
+
+# Movement Macro State
+macro_drawing = False
+macro_path_cells = []       # List of (col, row) cells in the drawn path
+macro_last_cell = None      # Last cell registered during drag
+macro_steps = []            # List of (scan_code, num_cells, label) after path finalized
+
+macro_running = False
+macro_thread = None
+macro_stop_event = None
+macro_current_step = -1
+
+GRID_SIZE = 9
+CELL_SIZE = 30
+GRID_PX = GRID_SIZE * CELL_SIZE  # 270px
+GRID_LEFT = (640 * 2 - GRID_PX) // 2
+GRID_TOP = 420 + 30
+
+# Direction mapping: (delta_col, delta_row) -> (scan_code, label)
+DIR_MAP = {
+    (0, -1): (SCAN_W, "W (Up)"),
+    (1, 0):  (SCAN_D, "D (Right)"),
+    (0, 1):  (SCAN_S, "S (Down)"),
+    (-1, 0): (SCAN_A, "A (Left)"),
+}
+DIR_COLORS = {
+    "W (Up)":    (0, 200, 0),
+    "D (Right)": (200, 200, 0),
+    "S (Down)":  (0, 100, 255),
+    "A (Left)":  (200, 0, 200),
+}
+
+def path_to_steps(path_cells):
+    """Convert a list of (col, row) cells into merged directional steps."""
+    if len(path_cells) < 2:
+        return []
+    steps = []
+    prev = path_cells[0]
+    for cell in path_cells[1:]:
+        dc = cell[0] - prev[0]
+        dr = cell[1] - prev[1]
+        info = DIR_MAP.get((dc, dr))
+        if info is None:
+            prev = cell
+            continue
+        scan, label = info
+        if steps and steps[-1][2] == label:
+            steps[-1] = (steps[-1][0], steps[-1][1] + 1, steps[-1][2])
+        else:
+            steps.append((scan, 1, label))
+        prev = cell
+    return steps
+
+def trace_orthogonal(from_cell, to_cell):
+    """Trace an orthogonal path from from_cell to to_cell, one cell at a time."""
+    cells = []
+    curr = list(from_cell)
+    target = list(to_cell)
+    while curr != target:
+        dc = target[0] - curr[0]
+        dr = target[1] - curr[1]
+        if abs(dc) >= abs(dr) and dc != 0:
+            curr[0] += 1 if dc > 0 else -1
+        elif dr != 0:
+            curr[1] += 1 if dr > 0 else -1
+        else:
+            break
+        cells.append(tuple(curr))
+    return cells
 
 # Preview panel dimensions within the composited canvas
 PREVIEW_W = 640
@@ -124,6 +240,7 @@ def mouse_callback(event, x, y, flags, param):
     global drag_start, drag_end, drawing_rect, calibrate_request
     global lock_area_start, lock_area_end, drawing_lock_area, lock_area_active
     global color_slots, selected_slot
+    global macro_drawing, macro_path_cells, macro_last_cell, macro_steps
     
     if event == cv2.EVENT_MOUSEMOVE:
         mouse_x = x
@@ -132,10 +249,31 @@ def mouse_callback(event, x, y, flags, param):
             drag_end = (x, y)
         elif drawing_lock_area:
             lock_area_end = (x, y)
+        elif macro_drawing and macro_last_cell is not None:
+            # Track freeform path through grid cells
+            gx = x - GRID_LEFT
+            gy = y - GRID_TOP
+            if 0 <= gx < GRID_PX and 0 <= gy < GRID_PX:
+                col = max(0, min(GRID_SIZE - 1, gx // CELL_SIZE))
+                row = max(0, min(GRID_SIZE - 1, gy // CELL_SIZE))
+                curr = (col, row)
+                if curr != macro_last_cell:
+                    new_cells = trace_orthogonal(macro_last_cell, curr)
+                    macro_path_cells.extend(new_cells)
+                    macro_last_cell = curr
             
     elif event == cv2.EVENT_LBUTTONDOWN:
-        # Check if click is on the bottom panel (color slots)
-        if y >= PREVIEW_H:
+        # Check if click is in Movement Macro Grid panel (y >= 420)
+        if y >= 420:
+            if GRID_LEFT <= x < GRID_LEFT + GRID_PX and GRID_TOP <= y < GRID_TOP + GRID_PX:
+                col = (x - GRID_LEFT) // CELL_SIZE
+                row = (y - GRID_TOP) // CELL_SIZE
+                macro_path_cells = [(col, row)]
+                macro_last_cell = (col, row)
+                macro_steps = []
+                macro_drawing = True
+        # Check if click is on the color slots panel (360 <= y < 420)
+        elif y >= PREVIEW_H:
             box_width = 80
             box_spacing = 20
             start_x = (PREVIEW_W * 2 - (3 * box_width + 2 * box_spacing)) // 2
@@ -145,7 +283,6 @@ def mouse_callback(event, x, y, flags, param):
                 if box_x <= x <= box_x + box_width:
                     selected_slot = i
                     color_slots[i]["active"] = True
-                    # Update trackbars to reflect the selected slot
                     lh, hh, ls, hs, lv, hv = color_slots[i]["hsv"]
                     cv2.setTrackbarPos("Low H", "iamstrix-colorbot", lh)
                     cv2.setTrackbarPos("High H", "iamstrix-colorbot", hh)
@@ -166,10 +303,25 @@ def mouse_callback(event, x, y, flags, param):
             drag_end = (x, y)
             drawing_rect = False
             calibrate_request = True
+        elif macro_drawing:
+            macro_drawing = False
+            macro_steps = path_to_steps(macro_path_cells)
+            if macro_steps:
+                total_cells = sum(s[1] for s in macro_steps)
+                print(f"[SUCCESS] Path drawn: {len(macro_steps)} steps, {total_cells} cells, {len(macro_path_cells)} waypoints")
+                for i, (sc, n, lbl) in enumerate(macro_steps):
+                    print(f"  Step {i+1}: {lbl} x{n} cells")
+            else:
+                print("[INFO] Path too short. Draw across at least 2 cells.")
             
     elif event == cv2.EVENT_RBUTTONDOWN:
-        # Check if click is on the bottom panel (color slots)
-        if y >= PREVIEW_H:
+        if y >= 420:
+            macro_path_cells = []
+            macro_steps = []
+            macro_last_cell = None
+            macro_drawing = False
+            print("[INFO] Patrol path cleared.")
+        elif y >= PREVIEW_H:
             box_width = 80
             box_spacing = 20
             start_x = (PREVIEW_W * 2 - (3 * box_width + 2 * box_spacing)) // 2
@@ -180,7 +332,6 @@ def mouse_callback(event, x, y, flags, param):
                     color_slots[i]["active"] = False
                     print(f"[INFO] Cleared Color Slot {i+1}")
                     break
-        # Only allow drag inside the live preview region (left half)
         elif x < PREVIEW_W and y < PREVIEW_H:
             lock_area_start = (x, y)
             lock_area_end = (x, y)
@@ -291,11 +442,36 @@ def calibrate_color_range(hsv_crop):
     max_v = min(255, max_v + 15)
     
     return min_h, max_h, min_s, max_s, min_v, max_v
+def macro_loop(steps, ms_per_cell, stop_event):
+    """Loops through a list of (scan_code, num_cells, label) steps."""
+    global macro_current_step
+    total = sum(s[1] * ms_per_cell for s in steps)
+    step_summary = " -> ".join(f"{s[2]}:{s[1]*ms_per_cell}ms" for s in steps)
+    print(f"[MACRO] Starting path loop: {step_summary} | Cycle={total}ms ({total/1000:.1f}s)")
 
+    try:
+        while not stop_event.is_set():
+            for i, (scan, cells, name) in enumerate(steps):
+                if stop_event.is_set():
+                    break
+                macro_current_step = i
+                duration_ms = cells * ms_per_cell
+                press_key(scan)
+                elapsed = 0
+                while elapsed < duration_ms and not stop_event.is_set():
+                    time.sleep(0.01)
+                    elapsed += 10
+                release_key(scan)
+    finally:
+        release_all_keys()
+        macro_current_step = -1
+        print("[MACRO] Patrol loop stopped.")
 def main():
     global drag_start, drag_end, drawing_rect, calibrate_request
     global lock_area_start, lock_area_end, drawing_lock_area, lock_area_active
     global color_slots, selected_slot
+    global macro_running, macro_thread, macro_stop_event, macro_current_step
+    global macro_drawing, macro_path_cells, macro_last_cell, macro_steps
     
     set_dpi_awareness()
     
@@ -306,10 +482,11 @@ def main():
     print("3. Right-click & drag on the LIVE PREVIEW to restrict mouse locking to a boundary.")
     print("   * Single right-click clears the boundary and reverts to full-screen tracking.")
     print("4. Press the ALT key to TOGGLE cursor lock ON/OFF.")
-    print("5. Set Click Speed (CPS) to automate clicks without drag-and-drop bugs.")
+    print("5. Press 'f' or SPACEBAR to FREEZE / UNFREEZE preview for easy crop calibration.")
+    print("6. Set Click Speed (CPS) to automate clicks without drag-and-drop bugs.")
     print("   * NOTE: Make sure to DISABLE any external auto-clicker macros to avoid conflicts!")
-    print("6. Hover your mouse over any trackbar label/slider for 1 second to view description.")
-    print("7. Press 'q' in the window to quit.")
+    print("7. Hover your mouse over any trackbar label/slider for 1 second to view description.")
+    print("8. Press 'q' in the window to quit.")
     print("=========================")
 
     # Detect number of monitors and their coordinates
@@ -356,6 +533,7 @@ def main():
     cv2.createTrackbar("Min Area", WIN_NAME, 1000, 5000, nothing)
     cv2.createTrackbar("Smoothing", WIN_NAME, 3, 20, nothing)
     cv2.createTrackbar("Click Speed (CPS)", WIN_NAME, 0, 50, nothing)
+    cv2.createTrackbar("ms/cell", WIN_NAME, 100, 500, nothing)
 
     # Only show display toggle slider if there is more than 1 display detected
     show_monitor_slider = num_monitors > 1
@@ -372,6 +550,7 @@ def main():
         {"prefix": "Min Area:", "name": "Min Area", "desc": "Minimum target size in pixels. Filters out small background noise particles."},
         {"prefix": "Smoothing:", "name": "Smoothing", "desc": "Divisor for cursor glide interpolation. Higher is smoother; 1 is instant snap."},
         {"prefix": "Click Speed (CPS):", "name": "Click Speed (CPS)", "desc": "Auto-click rate. Synchronizes clicks with tracking to prevent dragging bugs."},
+        {"prefix": "ms/cell:", "name": "ms/cell", "desc": "Duration in milliseconds per grid cell for WASD patrol macro movement."},
         {"prefix": "Monitor:", "name": "Monitor", "desc": "Index of display screen to capture and offset mouse cursor tracking coordinates."}
     ]
 
@@ -382,6 +561,9 @@ def main():
     last_frame = None
     lock_enabled = False
     key_was_down = False
+    is_frozen = False
+    frozen_frame = None
+    f5_was_down = False
 
     # Capture loop
     while True:
@@ -420,18 +602,21 @@ def main():
 
         frame = None
         
-        # 1. Grab screen frame depending on the active engine
-        if camera is not None:
-            dxcam_frame = camera.grab()
-            if dxcam_frame is not None:
-                frame = cv2.cvtColor(dxcam_frame, cv2.COLOR_RGB2BGR)
-                last_frame = frame.copy()
-            else:
-                if last_frame is not None:
-                    frame = last_frame.copy()
+        # 1. Grab screen frame depending on the active engine (unless frozen)
+        if is_frozen and frozen_frame is not None:
+            frame = frozen_frame.copy()
         else:
-            screenshot = sct.grab(monitor)
-            frame = np.array(screenshot)[:, :, :3]
+            if camera is not None:
+                dxcam_frame = camera.grab()
+                if dxcam_frame is not None:
+                    frame = cv2.cvtColor(dxcam_frame, cv2.COLOR_RGB2BGR)
+                    last_frame = frame.copy()
+                else:
+                    if last_frame is not None:
+                        frame = last_frame.copy()
+            else:
+                screenshot = sct.grab(monitor)
+                frame = np.array(screenshot)[:, :, :3]
             
         if frame is None or frame.size == 0 or len(frame.shape) < 2 or frame.shape[0] == 0 or frame.shape[1] == 0:
             time.sleep(0.001)
@@ -672,8 +857,10 @@ def main():
         mask_bgr = cv2.cvtColor(mask_resized, cv2.COLOR_GRAY2BGR)
 
         # Draw section labels on each panel
-        cv2.putText(resized_frame, "LIVE PREVIEW", (10, 18),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+        preview_label = "LIVE PREVIEW [FROZEN - Press F/SPACE]" if is_frozen else "LIVE PREVIEW"
+        label_color = (0, 0, 255) if is_frozen else (0, 255, 255)
+        cv2.putText(resized_frame, preview_label, (10, 18),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, label_color, 1 if not is_frozen else 2)
         cv2.putText(mask_bgr, "COLOR MASK", (10, 18),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
 
@@ -699,10 +886,8 @@ def main():
             
             # Fill color logic
             if color_slots[i]["active"]:
-                # Try to approximate a representative BGR color from the HSV bounds
                 lh, hh, ls, hs, lv, hv = color_slots[i]["hsv"]
                 avg_h = int((lh + hh) / 2)
-                # Keep saturation and value high to make the box clearly visible
                 avg_s = max(150, int((ls + hs) / 2))
                 avg_v = max(150, int((lv + hv) / 2))
                 
@@ -718,15 +903,168 @@ def main():
             border_thickness = 2 if i == selected_slot else 1
             cv2.rectangle(bottom_panel, (box_x, box_y), (box_x + box_width, box_y + 40), border_color, border_thickness)
 
-        # Vertically stack top_canvas and bottom_panel
-        canvas = np.vstack((top_canvas, bottom_panel))
+        # Build movement macro panel (300px height)
+        macro_h = 300
+        macro_panel = np.full((macro_h, PREVIEW_W * 2, 3), (35, 35, 35), dtype=np.uint8)
+
+        cv2.putText(macro_panel, "PATROL MACRO (Draw path on grid | F5 Start/Stop | Right-click to clear)", (15, 22),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
+
+        grid_local_x = GRID_LEFT
+        grid_local_y = 30
+
+        # Draw 9x9 grid
+        for i in range(GRID_SIZE + 1):
+            gx = grid_local_x + i * CELL_SIZE
+            gy = grid_local_y + i * CELL_SIZE
+            cv2.line(macro_panel, (gx, grid_local_y), (gx, grid_local_y + GRID_PX), (80, 80, 80), 1)
+            cv2.line(macro_panel, (grid_local_x, gy), (grid_local_x + GRID_PX, gy), (80, 80, 80), 1)
+        cv2.rectangle(macro_panel, (grid_local_x, grid_local_y), (grid_local_x + GRID_PX, grid_local_y + GRID_PX), (120, 120, 120), 2)
+
+        ms_per_cell = max(10, cv2.getTrackbarPos("ms/cell", WIN_NAME))
+
+        # Draw freeform path on grid
+        display_path = macro_path_cells
+        display_steps = macro_steps if not macro_drawing else path_to_steps(macro_path_cells)
+
+        if len(display_path) >= 2:
+            # Build step index for each cell transition (for coloring)
+            step_idx_for_segment = []
+            temp_steps = path_to_steps(display_path)
+            seg = 0
+            cell_count = 0
+            for si, (sc, n, lbl) in enumerate(temp_steps):
+                for _ in range(n):
+                    step_idx_for_segment.append((si, lbl))
+
+            # Draw path segments between consecutive cell centers
+            for i in range(len(display_path) - 1):
+                c1, r1 = display_path[i]
+                c2, r2 = display_path[i + 1]
+                px1 = grid_local_x + c1 * CELL_SIZE + CELL_SIZE // 2
+                py1 = grid_local_y + r1 * CELL_SIZE + CELL_SIZE // 2
+                px2 = grid_local_x + c2 * CELL_SIZE + CELL_SIZE // 2
+                py2 = grid_local_y + r2 * CELL_SIZE + CELL_SIZE // 2
+
+                # Color by direction
+                if i < len(step_idx_for_segment):
+                    si, lbl = step_idx_for_segment[i]
+                    color = DIR_COLORS.get(lbl, (200, 200, 200))
+                    thickness = 4 if macro_current_step == si else 2
+                else:
+                    color = (200, 200, 200)
+                    thickness = 2
+
+                cv2.arrowedLine(macro_panel, (px1, py1), (px2, py2), color, thickness, tipLength=0.35)
+
+            # Draw start marker
+            sc, sr = display_path[0]
+            sx = grid_local_x + sc * CELL_SIZE + CELL_SIZE // 2
+            sy = grid_local_y + sr * CELL_SIZE + CELL_SIZE // 2
+            cv2.circle(macro_panel, (sx, sy), 6, (0, 255, 0), -1)
+            cv2.circle(macro_panel, (sx, sy), 8, (255, 255, 255), 1)
+
+        # Instructions
+        left_x = 20
+        cv2.putText(macro_panel, "WASD Path Macro", (left_x, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+        cv2.putText(macro_panel, "1. Draw path on grid", (left_x, 85),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, (180, 180, 180), 1)
+        cv2.putText(macro_panel, "   (drag in any direction)", (left_x, 105),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (140, 140, 140), 1)
+        cv2.putText(macro_panel, "2. Set 'ms/cell' trackbar", (left_x, 130),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, (180, 180, 180), 1)
+        cv2.putText(macro_panel, "3. Press F5 to Start/Stop", (left_x, 155),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, (180, 180, 180), 1)
+
+        if macro_running:
+            step_text = display_steps[macro_current_step][2] if 0 <= macro_current_step < len(display_steps) else "..."
+            cv2.putText(macro_panel, "STATUS: MACRO ACTIVE", (left_x, 200),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 0, 255), 2)
+            cv2.putText(macro_panel, f"Step: {step_text}", (left_x, 225),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1)
+        elif display_steps:
+            cv2.putText(macro_panel, "STATUS: READY (F5 to Start)", (left_x, 200),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 0), 1)
+        else:
+            cv2.putText(macro_panel, "STATUS: NO PATH DRAWN", (left_x, 200),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.48, (120, 120, 120), 1)
+
+        # Step list display on the right
+        right_x = 800
+        cv2.putText(macro_panel, "Step Sequence:", (right_x, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+
+        if display_steps:
+            total_ms = 0
+            max_display = 7  # Show at most 7 steps to fit in the panel
+            for i, (sc, n, lbl) in enumerate(display_steps[:max_display]):
+                dur = n * ms_per_cell
+                total_ms += dur
+                color = DIR_COLORS.get(lbl, (200, 200, 200))
+                marker = ">" if macro_current_step == i else " "
+                cv2.putText(macro_panel, f"{marker} {i+1}. {lbl}  {dur}ms ({n} cells)", (right_x, 85 + i * 22),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.38, color, 1)
+            if len(display_steps) > max_display:
+                cv2.putText(macro_panel, f"  ... +{len(display_steps) - max_display} more steps", (right_x, 85 + max_display * 22),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.35, (140, 140, 140), 1)
+            total_ms = sum(s[1] * ms_per_cell for s in display_steps)
+            cv2.putText(macro_panel, f"Total Cycle: {total_ms}ms ({total_ms/1000:.2f}s)", (right_x, 270),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
+
+        # Vertically stack top_canvas, bottom_panel, and macro_panel
+        canvas = np.vstack((top_canvas, bottom_panel, macro_panel))
 
         # Display the unified canvas in the single window
         cv2.imshow(WIN_NAME, canvas)
         
-        # Press 'q' to exit
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        # Handle F5 key for Patrol Macro Toggle
+        f5_state = win32api.GetAsyncKeyState(win32con.VK_F5) & 0x8000
+        f5_is_down = bool(f5_state)
+
+        if f5_is_down and not f5_was_down:
+            if not macro_running:
+                if macro_steps:
+                    macro_stop_event = threading.Event()
+                    macro_running = True
+                    macro_thread = threading.Thread(
+                        target=macro_loop,
+                        args=(list(macro_steps), ms_per_cell, macro_stop_event),
+                        daemon=True
+                    )
+                    macro_thread.start()
+                else:
+                    print("[WARNING] No path drawn. Draw a path on the 9x9 grid first!")
+            else:
+                if macro_stop_event:
+                    macro_stop_event.set()
+                macro_running = False
+                if macro_thread:
+                    macro_thread.join(timeout=2)
+                release_all_keys()
+                macro_current_step = -1
+                print("[INFO] Patrol macro stopped.")
+
+        f5_was_down = f5_is_down
+
+        # Press 'q' to exit, 'f' or SPACEBAR to freeze/unfreeze frame
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
+            if macro_running and macro_stop_event:
+                macro_stop_event.set()
+                if macro_thread:
+                    macro_thread.join(timeout=2)
+                release_all_keys()
             break
+        elif key == ord('f') or key == 32:  # 'f' or SPACEBAR
+            is_frozen = not is_frozen
+            if is_frozen:
+                if frame is not None:
+                    frozen_frame = frame.copy()
+                print("[INFO] Screen preview FROZEN. Drag to crop color calibration at your leisure.")
+            else:
+                frozen_frame = None
+                print("[INFO] Screen preview UNFROZEN. Live feed resumed.")
 
     cv2.destroyAllWindows()
 
