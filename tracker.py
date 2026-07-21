@@ -107,6 +107,14 @@ lock_area_end = None
 drawing_lock_area = False
 lock_area_active = False
 
+# Multi-color targeting state
+color_slots = [
+    {"active": True, "hsv": (8, 18, 80, 255, 40, 110)},
+    {"active": False, "hsv": (0, 0, 0, 255, 0, 255)},
+    {"active": False, "hsv": (0, 0, 0, 255, 0, 255)}
+]
+selected_slot = 0
+
 # Preview panel dimensions within the composited canvas
 PREVIEW_W = 640
 PREVIEW_H = 360
@@ -115,6 +123,7 @@ def mouse_callback(event, x, y, flags, param):
     global mouse_x, mouse_y
     global drag_start, drag_end, drawing_rect, calibrate_request
     global lock_area_start, lock_area_end, drawing_lock_area, lock_area_active
+    global color_slots, selected_slot
     
     if event == cv2.EVENT_MOUSEMOVE:
         mouse_x = x
@@ -125,8 +134,29 @@ def mouse_callback(event, x, y, flags, param):
             lock_area_end = (x, y)
             
     elif event == cv2.EVENT_LBUTTONDOWN:
+        # Check if click is on the bottom panel (color slots)
+        if y >= PREVIEW_H:
+            box_width = 80
+            box_spacing = 20
+            start_x = (PREVIEW_W * 2 - (3 * box_width + 2 * box_spacing)) // 2
+            
+            for i in range(3):
+                box_x = start_x + i * (box_width + box_spacing)
+                if box_x <= x <= box_x + box_width:
+                    selected_slot = i
+                    color_slots[i]["active"] = True
+                    # Update trackbars to reflect the selected slot
+                    lh, hh, ls, hs, lv, hv = color_slots[i]["hsv"]
+                    cv2.setTrackbarPos("Low H", "iamstrix-colorbot", lh)
+                    cv2.setTrackbarPos("High H", "iamstrix-colorbot", hh)
+                    cv2.setTrackbarPos("Low S", "iamstrix-colorbot", ls)
+                    cv2.setTrackbarPos("High S", "iamstrix-colorbot", hs)
+                    cv2.setTrackbarPos("Low V", "iamstrix-colorbot", lv)
+                    cv2.setTrackbarPos("High V", "iamstrix-colorbot", hv)
+                    print(f"[INFO] Selected Color Slot {i+1}")
+                    break
         # Only allow drag inside the live preview region (left half)
-        if x < PREVIEW_W and y < PREVIEW_H:
+        elif x < PREVIEW_W and y < PREVIEW_H:
             drag_start = (x, y)
             drag_end = (x, y)
             drawing_rect = True
@@ -138,8 +168,20 @@ def mouse_callback(event, x, y, flags, param):
             calibrate_request = True
             
     elif event == cv2.EVENT_RBUTTONDOWN:
+        # Check if click is on the bottom panel (color slots)
+        if y >= PREVIEW_H:
+            box_width = 80
+            box_spacing = 20
+            start_x = (PREVIEW_W * 2 - (3 * box_width + 2 * box_spacing)) // 2
+            
+            for i in range(3):
+                box_x = start_x + i * (box_width + box_spacing)
+                if box_x <= x <= box_x + box_width:
+                    color_slots[i]["active"] = False
+                    print(f"[INFO] Cleared Color Slot {i+1}")
+                    break
         # Only allow drag inside the live preview region (left half)
-        if x < PREVIEW_W and y < PREVIEW_H:
+        elif x < PREVIEW_W and y < PREVIEW_H:
             lock_area_start = (x, y)
             lock_area_end = (x, y)
             drawing_lock_area = True
@@ -253,6 +295,7 @@ def calibrate_color_range(hsv_crop):
 def main():
     global drag_start, drag_end, drawing_rect, calibrate_request
     global lock_area_start, lock_area_end, drawing_lock_area, lock_area_active
+    global color_slots, selected_slot
     
     set_dpi_awareness()
     
@@ -415,7 +458,9 @@ def main():
                     cv2.setTrackbarPos("High S", WIN_NAME, max_s)
                     cv2.setTrackbarPos("Low V", WIN_NAME, min_v)
                     cv2.setTrackbarPos("High V", WIN_NAME, max_v)
-                    print(f"[SUCCESS] Calibrated from crop selection: H={min_h}-{max_h}, S={min_s}-{max_s}, V={min_v}-{max_v}")
+                    
+                    color_slots[selected_slot]["hsv"] = (min_h, max_h, min_s, max_s, min_v, max_v)
+                    print(f"[SUCCESS] Calibrated Slot {selected_slot+1} from crop selection: H={min_h}-{max_h}, S={min_s}-{max_s}, V={min_v}-{max_v}")
             calibrate_request = False
 
         # Read current trackbar positions
@@ -425,11 +470,28 @@ def main():
         h_s = cv2.getTrackbarPos("High S", WIN_NAME)
         l_v = cv2.getTrackbarPos("Low V", WIN_NAME)
         h_v = cv2.getTrackbarPos("High V", WIN_NAME)
+        
+        # Save to currently selected slot
+        color_slots[selected_slot]["hsv"] = (l_h, h_h, l_s, h_s, l_v, h_v)
+
         min_area = cv2.getTrackbarPos("Min Area", WIN_NAME)
         smoothing = max(1, cv2.getTrackbarPos("Smoothing", WIN_NAME))
         cps = cv2.getTrackbarPos("Click Speed (CPS)", WIN_NAME)
         
-        mask = cv2.inRange(hsv, np.array([l_h, l_s, l_v]), np.array([h_h, h_s, h_v]))
+        # Combine masks for all active color slots
+        mask = None
+        for i, slot in enumerate(color_slots):
+            if slot["active"]:
+                sl_h, sh_h, sl_s, sh_s, sl_v, sh_v = slot["hsv"]
+                m = cv2.inRange(hsv, np.array([sl_h, sl_s, sl_v]), np.array([sh_h, sh_s, sh_v]))
+                if mask is None:
+                    mask = m
+                else:
+                    mask = cv2.bitwise_or(mask, m)
+                    
+        if mask is None:
+            mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
+
         kernel = np.ones((5, 5), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
@@ -616,10 +678,48 @@ def main():
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
 
         # Horizontally stack both panels into a single canvas
-        canvas = np.hstack((resized_frame, mask_bgr))
+        top_canvas = np.hstack((resized_frame, mask_bgr))
 
         # Draw a thin vertical divider line between the two panels
-        cv2.line(canvas, (PREVIEW_W, 0), (PREVIEW_W, PREVIEW_H), (80, 80, 80), 2)
+        cv2.line(top_canvas, (PREVIEW_W, 0), (PREVIEW_W, PREVIEW_H), (80, 80, 80), 2)
+
+        # Build bottom panel for color slots
+        bottom_h = 60
+        bottom_panel = np.zeros((bottom_h, PREVIEW_W * 2, 3), dtype=np.uint8)
+        cv2.putText(bottom_panel, "Color Targets (Left-click to select, Right-click to clear):", (10, 35),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+                    
+        box_width = 80
+        box_spacing = 20
+        start_x = (PREVIEW_W * 2 - (3 * box_width + 2 * box_spacing)) // 2
+        
+        for i in range(3):
+            box_x = start_x + i * (box_width + box_spacing)
+            box_y = 10
+            
+            # Fill color logic
+            if color_slots[i]["active"]:
+                # Try to approximate a representative BGR color from the HSV bounds
+                lh, hh, ls, hs, lv, hv = color_slots[i]["hsv"]
+                avg_h = int((lh + hh) / 2)
+                # Keep saturation and value high to make the box clearly visible
+                avg_s = max(150, int((ls + hs) / 2))
+                avg_v = max(150, int((lv + hv) / 2))
+                
+                bgr_color = cv2.cvtColor(np.uint8([[[avg_h, avg_s, avg_v]]]), cv2.COLOR_HSV2BGR)[0][0]
+                bgr_color = (int(bgr_color[0]), int(bgr_color[1]), int(bgr_color[2]))
+                cv2.rectangle(bottom_panel, (box_x, box_y), (box_x + box_width, box_y + 40), bgr_color, -1)
+            else:
+                cv2.rectangle(bottom_panel, (box_x, box_y), (box_x + box_width, box_y + 40), (40, 40, 40), -1)
+                cv2.putText(bottom_panel, "EMPTY", (box_x + 18, box_y + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 150), 1)
+            
+            # Border
+            border_color = (0, 255, 255) if i == selected_slot else (100, 100, 100)
+            border_thickness = 2 if i == selected_slot else 1
+            cv2.rectangle(bottom_panel, (box_x, box_y), (box_x + box_width, box_y + 40), border_color, border_thickness)
+
+        # Vertically stack top_canvas and bottom_panel
+        canvas = np.vstack((top_canvas, bottom_panel))
 
         # Display the unified canvas in the single window
         cv2.imshow(WIN_NAME, canvas)
