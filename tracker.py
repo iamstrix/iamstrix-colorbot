@@ -610,6 +610,12 @@ def main():
     frozen_frame = None
     f5_was_down = False
 
+    # ROI (Region of Interest) tracking state for high-resolution target preservation
+    roi_center_native = None  # (cx_native, cy_native)
+    roi_frames_count = 0
+    MAX_ROI_FRAMES = 60
+    ROI_SIZE_NATIVE = 260
+
     # Capture loop
     while True:
         try:
@@ -704,57 +710,138 @@ def main():
         smoothing = max(1, get_val("Smoothing"))
         cps = get_val("Click Speed (CPS)")
         
-        # Combine masks for all active color slots
-        mask = None
-        for i, slot in enumerate(color_slots):
-            if slot["active"]:
-                sl_h, sh_h, sl_s, sh_s, sl_v, sh_v = slot["hsv"]
-                m = cv2.inRange(hsv, np.array([sl_h, sl_s, sl_v]), np.array([sh_h, sh_s, sh_v]))
-                if mask is None:
-                    mask = m
-                else:
-                    mask = cv2.bitwise_or(mask, m)
-                    
-        if mask is None:
-            mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
+        orig_h, orig_w = frame.shape[:2]
+        scale_x = orig_w / float(PREVIEW_W)
+        scale_y = orig_h / float(PREVIEW_H)
 
-        kernel = np.ones((5, 5), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-        
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
         target_center = None
         best_contour = None
         max_area = 0
-        
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            if area > min_area:
-                M = cv2.moments(contour)
-                if M["m00"] > 0:
-                    cx = int(M["m10"] / M["m00"])
-                    cy = int(M["m01"] / M["m00"])
+        using_roi_mode = False
+
+        # 1. Attempt High-Res Native ROI Crop detection if a previous target location exists
+        if roi_center_native is not None and roi_frames_count < MAX_ROI_FRAMES:
+            rx, ry = roi_center_native
+            half_size = ROI_SIZE_NATIVE // 2
+            x1 = max(0, rx - half_size)
+            y1 = max(0, ry - half_size)
+            x2 = min(orig_w, rx + half_size)
+            y2 = min(orig_h, ry + half_size)
+
+            if (x2 - x1) > 20 and (y2 - y1) > 20:
+                crop_frame = frame[y1:y2, x1:x2]
+                crop_hsv = cv2.cvtColor(crop_frame, cv2.COLOR_BGR2HSV)
+                
+                crop_mask = None
+                for slot in color_slots:
+                    if slot["active"]:
+                        sl_h, sh_h, sl_s, sh_s, sl_v, sh_v = slot["hsv"]
+                        m = cv2.inRange(crop_hsv, np.array([sl_h, sl_s, sl_v]), np.array([sh_h, sh_s, sh_v]))
+                        if crop_mask is None:
+                            crop_mask = m
+                        else:
+                            crop_mask = cv2.bitwise_or(crop_mask, m)
+                
+                if crop_mask is not None:
+                    kernel_roi = np.ones((3, 3), np.uint8)
+                    crop_mask = cv2.morphologyEx(crop_mask, cv2.MORPH_OPEN, kernel_roi)
+                    crop_mask = cv2.morphologyEx(crop_mask, cv2.MORPH_CLOSE, kernel_roi)
                     
-                    if lock_area_active and lock_area_start is not None and lock_area_end is not None:
-                        lx1, ly1 = lock_area_start
-                        lx2, ly2 = lock_area_end
-                        min_x, max_x = min(lx1, lx2), max(lx1, lx2)
-                        min_y, max_y = min(ly1, ly2), max(ly1, ly2)
-                        if not (min_x <= cx <= max_x and min_y <= cy <= max_y):
-                            continue
-                            
-                    if area > max_area:
-                        max_area = area
-                        best_contour = contour
-                        target_center = (cx, cy)
+                    roi_contours, _ = cv2.findContours(crop_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                     
+                    for contour in roi_contours:
+                        area = cv2.contourArea(contour)
+                        # Effective min area threshold for native cropped region
+                        if area >= max(5, int(min_area / (scale_x * scale_y))):
+                            M = cv2.moments(contour)
+                            if M["m00"] > 0:
+                                cx_crop = int(M["m10"] / M["m00"])
+                                cy_crop = int(M["m01"] / M["m00"])
+                                cx_native = x1 + cx_crop
+                                cy_native = y1 + cy_crop
+                                
+                                cx_prev = int(cx_native / scale_x)
+                                cy_prev = int(cy_native / scale_y)
+                                
+                                if lock_area_active and lock_area_start is not None and lock_area_end is not None:
+                                    lx1, ly1 = lock_area_start
+                                    lx2, ly2 = lock_area_end
+                                    min_x, max_x = min(lx1, lx2), max(lx1, lx2)
+                                    min_y, max_y = min(ly1, ly2), max(ly1, ly2)
+                                    if not (min_x <= cx_prev <= max_x and min_y <= cy_prev <= max_y):
+                                        continue
+                                        
+                                if area > max_area:
+                                    max_area = area
+                                    best_contour = contour
+                                    target_center = (cx_prev, cy_prev)
+                                    roi_center_native = (cx_native, cy_native)
+                                    using_roi_mode = True
+
+        if using_roi_mode and target_center is not None:
+            roi_frames_count += 1
+            # Draw High-Res ROI boundary on preview window
+            rx1, ry1 = int(x1 / scale_x), int(y1 / scale_y)
+            rx2, ry2 = int(x2 / scale_x), int(y2 / scale_y)
+            cv2.rectangle(resized_frame, (rx1, ry1), (rx2, ry2), (255, 255, 0), 1)
+            cv2.putText(resized_frame, "HIGH-RES ROI", (rx1, max(15, ry1 - 5)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
+        else:
+            # 2. Fallback / Periodic Full-Screen Search Mode
+            roi_frames_count = 0
+            mask = None
+            for slot in color_slots:
+                if slot["active"]:
+                    sl_h, sh_h, sl_s, sh_s, sl_v, sh_v = slot["hsv"]
+                    m = cv2.inRange(hsv, np.array([sl_h, sl_s, sl_v]), np.array([sh_h, sh_s, sh_v]))
+                    if mask is None:
+                        mask = m
+                    else:
+                        mask = cv2.bitwise_or(mask, m)
+                        
+            if mask is None:
+                mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
+
+            kernel = np.ones((3, 3), np.uint8)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+            
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            for contour in contours:
+                area = cv2.contourArea(contour)
+                if area > min_area:
+                    M = cv2.moments(contour)
+                    if M["m00"] > 0:
+                        cx = int(M["m10"] / M["m00"])
+                        cy = int(M["m01"] / M["m00"])
+                        
+                        if lock_area_active and lock_area_start is not None and lock_area_end is not None:
+                            lx1, ly1 = lock_area_start
+                            lx2, ly2 = lock_area_end
+                            min_x, max_x = min(lx1, lx2), max(lx1, lx2)
+                            min_y, max_y = min(ly1, ly2), max(ly1, ly2)
+                            if not (min_x <= cx <= max_x and min_y <= cy <= max_y):
+                                continue
+                                
+                        if area > max_area:
+                            max_area = area
+                            best_contour = contour
+                            target_center = (cx, cy)
+            
+            if target_center is not None:
+                roi_center_native = (int(target_center[0] * scale_x), int(target_center[1] * scale_y))
+            else:
+                roi_center_native = None
+
         if best_contour is not None and target_center is not None:
-            x, y, w, h = cv2.boundingRect(best_contour)
-            cv2.rectangle(resized_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            if not using_roi_mode:
+                x, y, w, h = cv2.boundingRect(best_contour)
+                cv2.rectangle(resized_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
             cv2.circle(resized_frame, target_center, 5, (0, 0, 255), -1)
-            cv2.putText(resized_frame, f"Target (Area: {int(max_area)})", (x, y - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            mode_tag = "ROI Native" if using_roi_mode else "Full Search"
+            cv2.putText(resized_frame, f"Target ({mode_tag} Area: {int(max_area)})", (target_center[0] - 20, max(20, target_center[1] - 10)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 2)
             
         key_state = win32api.GetAsyncKeyState(LOCK_HOTKEY) & 0x8000
         key_is_down = bool(key_state)
