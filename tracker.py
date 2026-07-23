@@ -21,8 +21,8 @@ except ImportError:
 pyautogui.FAILSAFE = True
 pyautogui.PAUSE = 0
 
-# Hotkey to enable mouse lock (ALT key)
-LOCK_HOTKEY = win32con.VK_MENU
+# Hotkey to enable mouse lock (F4 key)
+LOCK_HOTKEY = win32con.VK_F4
 
 # Ctypes structures for SendInput (allows grouping move + down + up into an atomic transaction)
 PUL = ctypes.POINTER(ctypes.c_ulong)
@@ -889,7 +889,7 @@ def main():
             cv2.putText(resized_frame, "LOCK ACTIVE (No Target)", (20, 40),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2)
         else:
-            cv2.putText(resized_frame, "LOCK INACTIVE (ALT to Toggle)", (20, 40),
+            cv2.putText(resized_frame, "LOCK INACTIVE (F4 to Toggle)", (20, 40),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
         if drawing_rect and drag_start is not None and drag_end is not None:
