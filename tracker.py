@@ -134,6 +134,9 @@ dz_start = None
 dz_end = None
 dz_drawing = False
 
+# ROI tracking mode toggle
+high_res_enabled = True
+
 # Keyboard Scan Codes for WASD
 SCAN_W = 0x11
 SCAN_A = 0x1E
@@ -569,7 +572,8 @@ def save_profile(slot_id):
             "end": list(lock_area_end) if lock_area_end else None,
             "active": lock_area_active
         },
-        "deadzones": [list(dz) for dz in deadzones]
+        "deadzones": [list(dz) for dz in deadzones],
+        "high_res_enabled": high_res_enabled
     }
     
     file_path = get_profile_path(slot_id)
@@ -586,6 +590,7 @@ def load_profile(slot_id):
     """Loads configuration from profile JSON file if it exists."""
     global selected_slot, color_slots, macro_path_cells, macro_steps
     global lock_area_start, lock_area_end, lock_area_active, deadzones
+    global high_res_enabled
     
     file_path = get_profile_path(slot_id)
     if not os.path.exists(file_path):
@@ -641,6 +646,8 @@ def load_profile(slot_id):
         else:
             deadzones = []
             
+        high_res_enabled = config_data.get("high_res_enabled", True)
+            
         os.makedirs(CONFIG_DIR, exist_ok=True)
         with open(LAST_FILE, "w", encoding="utf-8") as f:
             f.write(str(slot_id))
@@ -682,6 +689,7 @@ def main():
     global color_slots, selected_slot
     global macro_running, macro_thread, macro_stop_event, macro_current_step
     global macro_drawing, macro_path_cells, macro_last_cell, macro_steps
+    global high_res_enabled
     
     set_dpi_awareness()
     
@@ -776,6 +784,7 @@ def main():
     f3_was_down = False
     f4_was_down = False
     f5_was_down = False
+    f6_was_down = False
 
     # ROI (Region of Interest) tracking state for high-resolution target preservation
     roi_center_native = None  # (cx_native, cy_native)
@@ -887,7 +896,7 @@ def main():
         using_roi_mode = False
 
         # 1. Attempt High-Res Native ROI Crop detection if a previous target location exists
-        if roi_center_native is not None and roi_frames_count < MAX_ROI_FRAMES:
+        if high_res_enabled and roi_center_native is not None and roi_frames_count < MAX_ROI_FRAMES:
             rx, ry = roi_center_native
             half_size = ROI_SIZE_NATIVE // 2
             x1 = max(0, rx - half_size)
@@ -1112,6 +1121,10 @@ def main():
             cv2.putText(resized_frame, "Tip: Middle-click drag to set Deadzones | Hover labels for guides", (20, PREVIEW_H - 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1)
 
+        if not high_res_enabled:
+            cv2.putText(resized_frame, "HIGH-RES SCAN OFF", (PREVIEW_W - 140, 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+
         # ----------------------------------------------------
         # NATIVE WIN32 HOVER HOOK FOR TRACKBARS
         # ----------------------------------------------------
@@ -1278,7 +1291,9 @@ def main():
                     cv2.FONT_HERSHEY_SIMPLEX, 0.36, (200, 200, 200), 1)
         cv2.putText(macro_panel, "F5       : Toggle Patrol Macro", (col2_l, 182),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.36, (200, 200, 200), 1)
-        cv2.putText(macro_panel, "q        : Save & Quit", (col2_l, 204),
+        cv2.putText(macro_panel, "F6       : Toggle High-Res Scan", (col2_l, 204),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.36, (200, 200, 200), 1)
+        cv2.putText(macro_panel, "q        : Save & Quit", (col2_l, 226),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.36, (200, 200, 200), 1)
 
         # Sub-Column 2: Mouse Actions
@@ -1452,6 +1467,14 @@ def main():
                 print("[INFO] Patrol macro stopped.")
 
         f5_was_down = f5_is_down
+
+        # Handle F6 key for High-Res Scan Toggle
+        f6_state = win32api.GetAsyncKeyState(win32con.VK_F6) & 0x8000
+        f6_is_down = bool(f6_state)
+        if f6_is_down and not f6_was_down:
+            high_res_enabled = not high_res_enabled
+            print(f"[INFO] High-Res HSV Scanning {'ENABLED' if high_res_enabled else 'DISABLED'}.")
+        f6_was_down = f6_is_down
 
         # Press 'q' to exit, 'f' or SPACEBAR to freeze/unfreeze frame
         key = cv2.waitKey(1) & 0xFF
