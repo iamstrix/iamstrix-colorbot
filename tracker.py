@@ -128,6 +128,12 @@ lock_area_end = None
 drawing_lock_area = False
 lock_area_active = False
 
+# Middle-click drag (Deadzone Exclusion Regions)
+deadzones = []  # List of (x1, y1, x2, y2) in preview coordinates
+dz_start = None
+dz_end = None
+dz_drawing = False
+
 # Keyboard Scan Codes for WASD
 SCAN_W = 0x11
 SCAN_A = 0x1E
@@ -292,6 +298,7 @@ def mouse_callback(event, x, y, flags, param):
     global mouse_x, mouse_y
     global drag_start, drag_end, drawing_rect, calibrate_request
     global lock_area_start, lock_area_end, drawing_lock_area, lock_area_active
+    global deadzones, dz_start, dz_end, dz_drawing
     global color_slots, selected_slot
     global macro_drawing, macro_path_cells, macro_last_cell, macro_steps
     global active_slider_drag
@@ -311,6 +318,8 @@ def mouse_callback(event, x, y, flags, param):
             drag_end = (x, y)
         elif drawing_lock_area:
             lock_area_end = (x, y)
+        elif dz_drawing:
+            dz_end = (x, y)
         elif macro_drawing and macro_last_cell is not None:
             gx = x - GRID_LEFT
             gy = y - GRID_TOP
@@ -417,6 +426,25 @@ def mouse_callback(event, x, y, flags, param):
                 lock_area_start = None
                 lock_area_end = None
                 print("[INFO] Lock boundary cleared. Full screen tracking active.")
+                
+    elif event == cv2.EVENT_MBUTTONDOWN:
+        if x < PREVIEW_W and y < PREVIEW_H:
+            dz_start = (x, y)
+            dz_end = (x, y)
+            dz_drawing = True
+            
+    elif event == cv2.EVENT_MBUTTONUP:
+        if dz_drawing:
+            dz_end = (x, y)
+            dz_drawing = False
+            if dz_start is not None:
+                x1, y1 = dz_start
+                x2, y2 = dz_end
+                x_min, x_max = min(x1, x2), max(x1, x2)
+                y_min, y_max = min(y1, y2), max(y1, y2)
+                if (x_max - x_min) > 5 and (y_max - y_min) > 5:
+                    deadzones.append((x_min, y_min, x_max, y_max))
+                    print(f"[SUCCESS] Added Deadzone #{len(deadzones)}: X={x_min}-{x_max}, Y={y_min}-{y_max}")
 
 def nothing(x):
     pass
@@ -540,7 +568,8 @@ def save_profile(slot_id):
             "start": list(lock_area_start) if lock_area_start else None,
             "end": list(lock_area_end) if lock_area_end else None,
             "active": lock_area_active
-        }
+        },
+        "deadzones": [list(dz) for dz in deadzones]
     }
     
     file_path = get_profile_path(slot_id)
@@ -556,11 +585,17 @@ def save_profile(slot_id):
 def load_profile(slot_id):
     """Loads configuration from profile JSON file if it exists."""
     global selected_slot, color_slots, macro_path_cells, macro_steps
-    global lock_area_start, lock_area_end, lock_area_active
+    global lock_area_start, lock_area_end, lock_area_active, deadzones
     
     file_path = get_profile_path(slot_id)
     if not os.path.exists(file_path):
-        print(f"[INFO] Profile {slot_id + 1} does not exist yet. Using current/default settings.")
+        deadzones = []
+        lock_area_start = None
+        lock_area_end = None
+        lock_area_active = False
+        macro_path_cells = []
+        macro_steps = []
+        print(f"[INFO] Profile {slot_id + 1} does not exist yet. Defaulting to clean settings.")
         return False
         
     try:
@@ -600,6 +635,11 @@ def load_profile(slot_id):
             lock_area_start = tuple(la["start"]) if la.get("start") else None
             lock_area_end = tuple(la["end"]) if la.get("end") else None
             lock_area_active = la.get("active", False)
+
+        if "deadzones" in config_data:
+            deadzones = [tuple(dz) for dz in config_data["deadzones"]]
+        else:
+            deadzones = []
             
         os.makedirs(CONFIG_DIR, exist_ok=True)
         with open(LAST_FILE, "w", encoding="utf-8") as f:
@@ -638,6 +678,7 @@ def macro_loop(steps, ms_per_cell, stop_event):
 def main():
     global drag_start, drag_end, drawing_rect, calibrate_request
     global lock_area_start, lock_area_end, drawing_lock_area, lock_area_active
+    global deadzones, dz_start, dz_end, dz_drawing
     global color_slots, selected_slot
     global macro_running, macro_thread, macro_stop_event, macro_current_step
     global macro_drawing, macro_path_cells, macro_last_cell, macro_steps
@@ -733,6 +774,7 @@ def main():
     is_frozen = False
     f2_was_down = False
     f3_was_down = False
+    f4_was_down = False
     f5_was_down = False
 
     # ROI (Region of Interest) tracking state for high-resolution target preservation
@@ -895,6 +937,15 @@ def main():
                                     min_y, max_y = min(ly1, ly2), max(ly1, ly2)
                                     if not (min_x <= cx_prev <= max_x and min_y <= cy_prev <= max_y):
                                         continue
+
+                                # Skip targets inside deadzones
+                                in_deadzone = False
+                                for (dz_x1, dz_y1, dz_x2, dz_y2) in deadzones:
+                                    if dz_x1 <= cx_prev <= dz_x2 and dz_y1 <= cy_prev <= dz_y2:
+                                        in_deadzone = True
+                                        break
+                                if in_deadzone:
+                                    continue
                                         
                                 if area > max_area:
                                     max_area = area
@@ -926,6 +977,10 @@ def main():
                         
             if mask is None:
                 mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
+
+            # Zero out deadzones directly on the mask
+            for (dz_x1, dz_y1, dz_x2, dz_y2) in deadzones:
+                mask[dz_y1:dz_y2, dz_x1:dz_x2] = 0
 
             kernel = np.ones((3, 3), np.uint8)
             mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
@@ -1027,14 +1082,34 @@ def main():
             cv2.putText(resized_frame, "Setting Lock Boundary...", (lock_area_start[0], lock_area_start[1] - 8),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 165, 255), 1)
 
+        if dz_drawing and dz_start is not None and dz_end is not None:
+            cv2.rectangle(resized_frame, dz_start, dz_end, (0, 0, 255), 2)
+            cv2.putText(resized_frame, "Drawing Deadzone (Exclusion Area)...", (dz_start[0], dz_start[1] - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 1)
+
+        # Render active deadzone exclusion regions
+        if deadzones:
+            dz_overlay = resized_frame.copy()
+            for idx, (dz_x1, dz_y1, dz_x2, dz_y2) in enumerate(deadzones):
+                cv2.rectangle(dz_overlay, (dz_x1, dz_y1), (dz_x2, dz_y2), (0, 0, 180), -1)
+                cv2.rectangle(resized_frame, (dz_x1, dz_y1), (dz_x2, dz_y2), (0, 0, 255), 1)
+                cx_dz = (dz_x1 + dz_x2) // 2
+                cy_dz = (dz_y1 + dz_y2) // 2
+                cv2.putText(resized_frame, "X", (cx_dz - 5, cy_dz + 5),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+            cv2.addWeighted(dz_overlay, 0.25, resized_frame, 0.75, 0, resized_frame)
+
         if lock_area_active and lock_area_start is not None and lock_area_end is not None:
             lx1, ly1 = lock_area_start
             lx2, ly2 = lock_area_end
             cv2.rectangle(resized_frame, (min(lx1, lx2), min(ly1, ly2)), (max(lx1, lx2), max(ly1, ly2)), (0, 165, 255), 2)
             cv2.putText(resized_frame, "Lock Boundary Active (Right-click to clear)", (20, PREVIEW_H - 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 165, 255), 1)
+        elif deadzones:
+            cv2.putText(resized_frame, f"Deadzones: {len(deadzones)} Active (F4 to clear)", (20, PREVIEW_H - 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
         else:
-            cv2.putText(resized_frame, "Tip: Hover over trackbar labels for guides", (20, PREVIEW_H - 20),
+            cv2.putText(resized_frame, "Tip: Middle-click drag to set Deadzones | Hover labels for guides", (20, PREVIEW_H - 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1)
 
         # ----------------------------------------------------
@@ -1291,6 +1366,7 @@ def main():
         f2_state = win32api.GetAsyncKeyState(win32con.VK_F2) & 0x8000
         f2_is_down = bool(f2_state)
         if f2_is_down and not f2_was_down:
+            save_profile(current_profile)
             current_profile = (current_profile + 1) % MAX_PROFILES
             load_profile(current_profile)
         f2_was_down = f2_is_down
@@ -1301,6 +1377,17 @@ def main():
         if f3_is_down and not f3_was_down:
             save_profile(current_profile)
         f3_was_down = f3_is_down
+
+        # Handle F4 key for Clearing Deadzones
+        f4_state = win32api.GetAsyncKeyState(win32con.VK_F4) & 0x8000
+        f4_is_down = bool(f4_state)
+        if f4_is_down and not f4_was_down:
+            if deadzones:
+                deadzones = []
+                print("[INFO] All deadzones cleared.")
+            else:
+                print("[INFO] No active deadzones to clear.")
+        f4_was_down = f4_is_down
 
         # Handle F5 key for Patrol Macro Toggle
         f5_state = win32api.GetAsyncKeyState(win32con.VK_F5) & 0x8000
