@@ -51,11 +51,12 @@ python tracker.py
 ### Quick Start
 1. Run python tracker.py.
 2. Left-click and drag over a target in the live preview to auto-calibrate HSV values.
-3. (Optional) Press F or SPACEBAR to freeze the frame if the target moves quickly.
-4. Press ALT to toggle cursor lock on or off.
-5. Draw a movement route on the bottom 9x9 grid and press F5 to run the patrol macro.
-6. Press F2 to cycle through 5 profile slots; press F3 to manually save the current profile.
-7. Press q to exit (auto-saves active profile).
+3. Middle-click and drag over persistent UI elements (healthbars, minimap) to add deadzone exclusion regions.
+4. (Optional) Press F or SPACEBAR to freeze the frame if the target moves quickly.
+5. Press ALT to toggle cursor lock on or off.
+6. Draw a movement route on the bottom 9x9 grid and press F5 to run the patrol macro.
+7. Press F2 to cycle profiles (1-5), F3 to save, F4 to clear deadzones.
+8. Press q to exit (auto-saves active profile).
 
 ### Controls
 
@@ -64,6 +65,8 @@ python tracker.py
 | Left-click drag (preview) | Select calibration crop area |
 | Right-click drag (preview) | Set lock boundary area |
 | Right-click (preview) | Clear lock boundary |
+| Middle-click drag (preview) | Draw deadzone exclusion region (blocks sticky UI) |
+| F4 | Clear all active deadzones |
 | F / SPACEBAR | Toggle freeze-frame preview |
 | ALT | Toggle cursor lock on/off |
 | F2 | Cycle active profile slot (Profile 1 to 5) |
