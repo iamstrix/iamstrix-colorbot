@@ -8,6 +8,8 @@ import win32gui
 import win32con
 import ctypes
 import threading
+import json
+import os
 
 # Attempt to import dxcam for ultra-high FPS DirectX capture
 DXCAM_AVAILABLE = False
@@ -501,6 +503,114 @@ def calibrate_color_range(hsv_crop):
     max_v = min(255, max_v + 15)
     
     return min_h, max_h, min_s, max_s, min_v, max_v
+
+CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs")
+MAX_PROFILES = 5
+LAST_FILE = os.path.join(CONFIG_DIR, ".last")
+
+def get_profile_path(slot_id):
+    return os.path.join(CONFIG_DIR, f"profile_{slot_id + 1}.json")
+
+def save_profile(slot_id):
+    """Saves current configuration to profile JSON file."""
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    
+    # Save active slot's sliders back into color_slots first
+    lh = get_val("Low H")
+    hh = get_val("High H")
+    ls = get_val("Low S")
+    hs = get_val("High S")
+    lv = get_val("Low V")
+    hv = get_val("High V")
+    if 0 <= selected_slot < len(color_slots):
+        color_slots[selected_slot]["hsv"] = (lh, hh, ls, hs, lv, hv)
+
+    config_data = {
+        "color_slots": color_slots,
+        "selected_slot": selected_slot,
+        "sliders": {
+            "Min Area": get_val("Min Area"),
+            "Smoothing": get_val("Smoothing"),
+            "Click Speed (CPS)": get_val("Click Speed (CPS)"),
+            "ms/cell": get_val("ms/cell"),
+            "Monitor": get_val("Monitor")
+        },
+        "macro_path_cells": [list(cell) for cell in macro_path_cells],
+        "lock_area": {
+            "start": list(lock_area_start) if lock_area_start else None,
+            "end": list(lock_area_end) if lock_area_end else None,
+            "active": lock_area_active
+        }
+    }
+    
+    file_path = get_profile_path(slot_id)
+    try:
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(config_data, f, indent=2)
+        with open(LAST_FILE, "w", encoding="utf-8") as f:
+            f.write(str(slot_id))
+        print(f"[SUCCESS] Saved profile {slot_id + 1} to {file_path}")
+    except Exception as e:
+        print(f"[ERROR] Failed to save profile {slot_id + 1}: {e}")
+
+def load_profile(slot_id):
+    """Loads configuration from profile JSON file if it exists."""
+    global selected_slot, color_slots, macro_path_cells, macro_steps
+    global lock_area_start, lock_area_end, lock_area_active
+    
+    file_path = get_profile_path(slot_id)
+    if not os.path.exists(file_path):
+        print(f"[INFO] Profile {slot_id + 1} does not exist yet. Using current/default settings.")
+        return False
+        
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            config_data = json.load(f)
+            
+        if "color_slots" in config_data:
+            for i, slot in enumerate(config_data["color_slots"]):
+                if i < len(color_slots):
+                    color_slots[i]["active"] = slot.get("active", False)
+                    hsv = slot.get("hsv", (0, 0, 0, 255, 0, 255))
+                    color_slots[i]["hsv"] = tuple(hsv)
+                    
+        if "selected_slot" in config_data:
+            selected_slot = max(0, min(len(color_slots) - 1, config_data["selected_slot"]))
+            
+        # Update sliders with loaded slot HSV
+        lh, hh, ls, hs, lv, hv = color_slots[selected_slot]["hsv"]
+        set_val("Low H", lh)
+        set_val("High H", hh)
+        set_val("Low S", ls)
+        set_val("High S", hs)
+        set_val("Low V", lv)
+        set_val("High V", hv)
+        
+        if "sliders" in config_data:
+            for sname, sval in config_data["sliders"].items():
+                if sname in sliders:
+                    set_val(sname, sval)
+                    
+        if "macro_path_cells" in config_data:
+            macro_path_cells = [tuple(cell) for cell in config_data["macro_path_cells"]]
+            macro_steps = path_to_steps(macro_path_cells)
+            
+        if "lock_area" in config_data:
+            la = config_data["lock_area"]
+            lock_area_start = tuple(la["start"]) if la.get("start") else None
+            lock_area_end = tuple(la["end"]) if la.get("end") else None
+            lock_area_active = la.get("active", False)
+            
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        with open(LAST_FILE, "w", encoding="utf-8") as f:
+            f.write(str(slot_id))
+            
+        print(f"[SUCCESS] Loaded profile {slot_id + 1} from {file_path}")
+        return True
+    except Exception as e:
+        print(f"[ERROR] Failed to load profile {slot_id + 1}: {e}")
+        return False
+
 def macro_loop(steps, ms_per_cell, stop_event):
     """Loops through a list of (scan_code, num_cells, label) steps."""
     global macro_current_step
@@ -545,8 +655,22 @@ def main():
     print("6. Set Click Speed (CPS) to automate clicks without drag-and-drop bugs.")
     print("   * NOTE: Make sure to DISABLE any external auto-clicker macros to avoid conflicts!")
     print("7. Hover your mouse over any trackbar label/slider for 1 second to view description.")
-    print("8. Press 'q' in the window to quit.")
+    print("8. Press F2 to CYCLE profiles (1-5), F3 to SAVE current profile.")
+    print("9. Press 'q' in the window to quit (auto-saves current profile).")
     print("=========================")
+
+    # Initialize / Load active profile
+    current_profile = 0
+    if os.path.exists(LAST_FILE):
+        try:
+            with open(LAST_FILE, "r", encoding="utf-8") as f:
+                last_idx = int(f.read().strip())
+                if 0 <= last_idx < MAX_PROFILES:
+                    current_profile = last_idx
+        except Exception:
+            pass
+
+    load_profile(current_profile)
 
     # Detect number of monitors and their coordinates
     num_monitors = 1
@@ -607,7 +731,8 @@ def main():
     lock_enabled = False
     key_was_down = False
     is_frozen = False
-    frozen_frame = None
+    f2_was_down = False
+    f3_was_down = False
     f5_was_down = False
 
     # ROI (Region of Interest) tracking state for high-resolution target preservation
@@ -1152,9 +1277,31 @@ def main():
         # Vertically stack top_canvas, bottom_panel, and macro_panel
         canvas = np.vstack((top_canvas, bottom_panel, macro_panel))
 
+        # Render profile status overlay on top-right of canvas
+        prof_path = get_profile_path(current_profile)
+        prof_saved = os.path.exists(prof_path)
+        prof_label = f"Profile {current_profile + 1}/{MAX_PROFILES}" + (" [Saved]" if prof_saved else " [New]")
+        cv2.putText(canvas, f"{prof_label}  (F2: Cycle | F3: Save)", (canvas.shape[1] - 370, 28),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 200), 1, cv2.LINE_AA)
+
         # Display the unified canvas in the single window
         cv2.imshow(WIN_NAME, canvas)
-        
+
+        # Handle F2 key for Profile Cycle
+        f2_state = win32api.GetAsyncKeyState(win32con.VK_F2) & 0x8000
+        f2_is_down = bool(f2_state)
+        if f2_is_down and not f2_was_down:
+            current_profile = (current_profile + 1) % MAX_PROFILES
+            load_profile(current_profile)
+        f2_was_down = f2_is_down
+
+        # Handle F3 key for Profile Save
+        f3_state = win32api.GetAsyncKeyState(win32con.VK_F3) & 0x8000
+        f3_is_down = bool(f3_state)
+        if f3_is_down and not f3_was_down:
+            save_profile(current_profile)
+        f3_was_down = f3_is_down
+
         # Handle F5 key for Patrol Macro Toggle
         f5_state = win32api.GetAsyncKeyState(win32con.VK_F5) & 0x8000
         f5_is_down = bool(f5_state)
@@ -1187,6 +1334,7 @@ def main():
         # Press 'q' to exit, 'f' or SPACEBAR to freeze/unfreeze frame
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
+            save_profile(current_profile)
             if macro_running and macro_stop_event:
                 macro_stop_event.set()
                 if macro_thread:

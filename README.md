@@ -54,7 +54,8 @@ python tracker.py
 3. (Optional) Press F or SPACEBAR to freeze the frame if the target moves quickly.
 4. Press ALT to toggle cursor lock on or off.
 5. Draw a movement route on the bottom 9x9 grid and press F5 to run the patrol macro.
-6. Press q to exit.
+6. Press F2 to cycle through 5 profile slots; press F3 to manually save the current profile.
+7. Press q to exit (auto-saves active profile).
 
 ### Controls
 
@@ -65,10 +66,12 @@ python tracker.py
 | Right-click (preview) | Clear lock boundary |
 | F / SPACEBAR | Toggle freeze-frame preview |
 | ALT | Toggle cursor lock on/off |
+| F2 | Cycle active profile slot (Profile 1 to 5) |
+| F3 | Save current settings to active profile |
 | Left-click drag (grid) | Draw freeform WASD patrol path |
 | Right-click (grid) | Clear patrol path |
 | F5 | Start or stop patrol macro |
-| q | Quit application |
+| q | Auto-save active profile and quit application |
 
 ## Project Structure
 
