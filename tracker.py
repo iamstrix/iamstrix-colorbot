@@ -190,7 +190,7 @@ MACRO_H = 260
 GRID_SIZE = 9
 CELL_SIZE = 22
 GRID_PX = GRID_SIZE * CELL_SIZE  # 198px
-GRID_LEFT = 1080                 # Column 3 Grid Left in main canvas (x = 1080)
+GRID_LEFT = 1070                 # Column 3 Grid Left in main canvas (x = 1070)
 GRID_TOP = PREVIEW_H + SLOTS_H + 35  # 530px in main canvas
 
 # Custom Dark Mode Sliders State
@@ -1257,40 +1257,51 @@ def main():
             cv2.circle(macro_panel, (knob_x, ly), 5, (0, 255, 255), -1)
             cv2.circle(macro_panel, (knob_x, ly), 6, (255, 255, 255), 1)
 
-        # Column 2: Patrol Macro Controls & Status
-        mid_x = 530
-        cv2.putText(macro_panel, "PATROL MACRO CONTROLS", (mid_x, 24),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-        cv2.putText(macro_panel, "1. Drag path on 9x9 grid (right)", (mid_x, 58),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 180), 1)
-        cv2.putText(macro_panel, "2. Right-click grid to clear path", (mid_x, 85),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 180), 1)
-        cv2.putText(macro_panel, "3. Adjust ms/cell slider on left", (mid_x, 112),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 180), 1)
-        cv2.putText(macro_panel, "4. Press F5 to Start / Stop macro", (mid_x, 139),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 180), 1)
+        # Column 2: Hotkey & Controls Manual
+        col2_l = 525
+        col2_r = 785
+        cv2.putText(macro_panel, "HOTKEY & CONTROLS MANUAL", (col2_l, 24),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 255), 1)
 
-        ms_per_cell = max(10, get_val("ms/cell"))
+        # Sub-Column 1: Keyboard Hotkeys
+        cv2.putText(macro_panel, "[KEYBOARD]", (col2_l, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 200, 255), 1)
+        cv2.putText(macro_panel, "ALT      : Toggle Mouse Lock", (col2_l, 72),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.36, (200, 200, 200), 1)
+        cv2.putText(macro_panel, "F / SPACE: Freeze Preview", (col2_l, 94),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.36, (200, 200, 200), 1)
+        cv2.putText(macro_panel, "F2       : Cycle Profile (1-5)", (col2_l, 116),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.36, (200, 200, 200), 1)
+        cv2.putText(macro_panel, "F3       : Save Active Profile", (col2_l, 138),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.36, (200, 200, 200), 1)
+        cv2.putText(macro_panel, "F4       : Clear Deadzones", (col2_l, 160),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.36, (200, 200, 200), 1)
+        cv2.putText(macro_panel, "F5       : Toggle Patrol Macro", (col2_l, 182),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.36, (200, 200, 200), 1)
+        cv2.putText(macro_panel, "q        : Save & Quit", (col2_l, 204),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.36, (200, 200, 200), 1)
 
-        display_path = macro_path_cells
-        display_steps = macro_steps if not macro_drawing else path_to_steps(macro_path_cells)
+        # Sub-Column 2: Mouse Actions
+        cv2.putText(macro_panel, "[MOUSE ACTIONS]", (col2_r, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 200, 255), 1)
+        cv2.putText(macro_panel, "L-Drag (Preview) : Calibrate HSV", (col2_r, 72),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.36, (200, 200, 200), 1)
+        cv2.putText(macro_panel, "R-Drag (Preview) : Lock Boundary", (col2_r, 94),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.36, (200, 200, 200), 1)
+        cv2.putText(macro_panel, "R-Click (Preview): Clear Boundary", (col2_r, 116),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.36, (200, 200, 200), 1)
+        cv2.putText(macro_panel, "M-Drag (Preview) : Add Deadzone", (col2_r, 138),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.36, (200, 200, 200), 1)
+        cv2.putText(macro_panel, "L-Drag (Grid)    : Draw WASD Path", (col2_r, 160),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.36, (200, 200, 200), 1)
+        cv2.putText(macro_panel, "R-Click (Grid)   : Clear Path", (col2_r, 182),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.36, (200, 200, 200), 1)
+        cv2.putText(macro_panel, "L-Click (Slots)  : Select Slot", (col2_r, 204),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.36, (200, 200, 200), 1)
 
-        if macro_running:
-            step_text = display_steps[macro_current_step][2] if 0 <= macro_current_step < len(display_steps) else "..."
-            cv2.putText(macro_panel, "STATUS: MACRO ACTIVE (F5 to Stop)", (mid_x, 180),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 0, 255), 2)
-            cv2.putText(macro_panel, f"Active Step: {step_text}", (mid_x, 208),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 255, 0), 1)
-        elif display_steps:
-            cv2.putText(macro_panel, "STATUS: READY (F5 to Start)", (mid_x, 180),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.46, (0, 255, 0), 1)
-        else:
-            cv2.putText(macro_panel, "STATUS: NO PATH DRAWN", (mid_x, 180),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.46, (120, 120, 120), 1)
-
-        # Column 3: 9x9 Grid & Sequence List
-        grid_local_x = GRID_LEFT   # relative to macro_panel full width
-        grid_local_y = GRID_TOP - (PREVIEW_H + SLOTS_H)  # relative to macro_panel
+        # Column 3: 9x9 Grid & Patrol Controls
+        grid_local_x = GRID_LEFT
+        grid_local_y = GRID_TOP - (PREVIEW_H + SLOTS_H)
 
         for i in range(GRID_SIZE + 1):
             gx = grid_local_x + i * CELL_SIZE
@@ -1298,6 +1309,10 @@ def main():
             cv2.line(macro_panel, (gx, grid_local_y), (gx, grid_local_y + GRID_PX), (70, 70, 70), 1)
             cv2.line(macro_panel, (grid_local_x, gy), (grid_local_x + GRID_PX, gy), (70, 70, 70), 1)
         cv2.rectangle(macro_panel, (grid_local_x, grid_local_y), (grid_local_x + GRID_PX, grid_local_y + GRID_PX), (120, 120, 120), 2)
+
+        ms_per_cell = max(10, get_val("ms/cell"))
+        display_path = macro_path_cells
+        display_steps = macro_steps if not macro_drawing else path_to_steps(macro_path_cells)
 
         if len(display_path) >= 2:
             step_idx_for_segment = []
@@ -1330,24 +1345,44 @@ def main():
             cv2.circle(macro_panel, (sx, sy), 5, (0, 255, 0), -1)
             cv2.circle(macro_panel, (sx, sy), 7, (255, 255, 255), 1)
 
-        seq_x = grid_local_x + GRID_PX + 25
-        cv2.putText(macro_panel, "Step Sequence:", (seq_x, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
+        seq_x = 1290
+        cv2.putText(macro_panel, "PATROL CONTROLS", (seq_x, 24),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 255), 1)
+        cv2.putText(macro_panel, "1. Drag path on 9x9 grid", (seq_x, 44),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (180, 180, 180), 1)
+        cv2.putText(macro_panel, "2. R-Click grid to clear", (seq_x, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (180, 180, 180), 1)
+        cv2.putText(macro_panel, "3. F5 to Start / Stop macro", (seq_x, 76),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (180, 180, 180), 1)
+
+        if macro_running:
+            step_text = display_steps[macro_current_step][2] if 0 <= macro_current_step < len(display_steps) else "..."
+            cv2.putText(macro_panel, "STATUS: RUNNING (F5 Stop)", (seq_x, 96),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 2)
+        elif display_steps:
+            cv2.putText(macro_panel, "STATUS: READY (F5 Start)", (seq_x, 96),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+        else:
+            cv2.putText(macro_panel, "STATUS: NO PATH DRAWN", (seq_x, 96),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (120, 120, 120), 1)
+
+        cv2.putText(macro_panel, "Step Sequence:", (seq_x, 116),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
 
         if display_steps:
-            max_display = 7
+            max_display = 5
             for i, (sc, n, lbl) in enumerate(display_steps[:max_display]):
                 dur = n * ms_per_cell
                 color = DIR_COLORS.get(lbl, (200, 200, 200))
                 marker = ">" if macro_current_step == i else " "
-                cv2.putText(macro_panel, f"{marker}{i+1}. {lbl} {dur}ms", (seq_x, 54 + i * 20),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.38, color, 1)
+                cv2.putText(macro_panel, f"{marker}{i+1}. {lbl} {dur}ms", (seq_x, 134 + i * 18),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.36, color, 1)
             if len(display_steps) > max_display:
-                cv2.putText(macro_panel, f"  +{len(display_steps) - max_display} more", (seq_x, 54 + max_display * 20),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.35, (140, 140, 140), 1)
+                cv2.putText(macro_panel, f"  +{len(display_steps) - max_display} more", (seq_x, 134 + max_display * 18),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.34, (140, 140, 140), 1)
             total_ms = sum(s[1] * ms_per_cell for s in display_steps)
-            cv2.putText(macro_panel, f"Cycle: {total_ms}ms ({total_ms/1000:.2f}s)", (seq_x, 218),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 255, 255), 1)
+            cv2.putText(macro_panel, f"Cycle: {total_ms}ms ({total_ms/1000:.2f}s)", (seq_x, 240),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
 
         # Vertically stack top_canvas, bottom_panel, and macro_panel
         canvas = np.vstack((top_canvas, bottom_panel, macro_panel))
