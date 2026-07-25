@@ -66,6 +66,7 @@ python tracker.py
 | Right-click drag (preview) | Set lock boundary area |
 | Right-click (preview) | Clear lock boundary |
 | Middle-click drag (preview) | Draw deadzone exclusion region (blocks sticky UI) |
+| Middle-click (preview) | Delete deadzone box under cursor (newest first) |
 | F4 | Clear all active deadzones |
 | F / SPACEBAR | Toggle freeze-frame preview |
 | ALT | Toggle cursor lock on/off |

@@ -448,6 +448,18 @@ def mouse_callback(event, x, y, flags, param):
                 if (x_max - x_min) > 5 and (y_max - y_min) > 5:
                     deadzones.append((x_min, y_min, x_max, y_max))
                     print(f"[SUCCESS] Added Deadzone #{len(deadzones)}: X={x_min}-{x_max}, Y={y_min}-{y_max}")
+                else:
+                    # Single middle-click: delete the deadzone box under cursor (top-most / most recent first)
+                    deleted = False
+                    for idx in range(len(deadzones) - 1, -1, -1):
+                        dz_x1, dz_y1, dz_x2, dz_y2 = deadzones[idx]
+                        if dz_x1 <= x <= dz_x2 and dz_y1 <= y <= dz_y2:
+                            removed_dz = deadzones.pop(idx)
+                            print(f"[INFO] Deleted Deadzone #{idx + 1}: X={removed_dz[0]}-{removed_dz[2]}, Y={removed_dz[1]}-{removed_dz[3]}")
+                            deleted = True
+                            break
+                    if not deleted:
+                        print("[INFO] No deadzone found under cursor to delete.")
 
 def nothing(x):
     pass
@@ -1320,7 +1332,7 @@ def main():
                     cv2.FONT_HERSHEY_SIMPLEX, 0.36, (200, 200, 200), 1)
         cv2.putText(macro_panel, "R-Click (Preview): Clear Boundary", (col2_r, 116),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.36, (200, 200, 200), 1)
-        cv2.putText(macro_panel, "M-Drag (Preview) : Add Deadzone", (col2_r, 138),
+        cv2.putText(macro_panel, "M-Drag/Click: Add/Del Deadzone", (col2_r, 138),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.36, (200, 200, 200), 1)
         cv2.putText(macro_panel, "L-Drag (Grid)    : Draw WASD Path", (col2_r, 160),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.36, (200, 200, 200), 1)
