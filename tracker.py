@@ -919,6 +919,21 @@ def main():
                             crop_mask = cv2.bitwise_or(crop_mask, m)
                 
                 if crop_mask is not None:
+                    # Zero out deadzones on the ROI crop mask (convert preview->native->crop-local coords)
+                    for (dz_x1, dz_y1, dz_x2, dz_y2) in deadzones:
+                        # Preview coords -> Native coords
+                        ndz_x1 = int(dz_x1 * scale_x)
+                        ndz_y1 = int(dz_y1 * scale_y)
+                        ndz_x2 = int(dz_x2 * scale_x)
+                        ndz_y2 = int(dz_y2 * scale_y)
+                        # Native coords -> Crop-local coords (clamped)
+                        ldz_x1 = max(0, ndz_x1 - x1)
+                        ldz_y1 = max(0, ndz_y1 - y1)
+                        ldz_x2 = min(x2 - x1, ndz_x2 - x1)
+                        ldz_y2 = min(y2 - y1, ndz_y2 - y1)
+                        if ldz_x2 > ldz_x1 and ldz_y2 > ldz_y1:
+                            crop_mask[ldz_y1:ldz_y2, ldz_x1:ldz_x2] = 0
+
                     kernel_roi = np.ones((3, 3), np.uint8)
                     crop_mask = cv2.morphologyEx(crop_mask, cv2.MORPH_OPEN, kernel_roi)
                     crop_mask = cv2.morphologyEx(crop_mask, cv2.MORPH_CLOSE, kernel_roi)
