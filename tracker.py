@@ -1039,6 +1039,15 @@ def main():
                             min_y, max_y = min(ly1, ly2), max(ly1, ly2)
                             if not (min_x <= cx <= max_x and min_y <= cy <= max_y):
                                 continue
+
+                        # Explicitly skip if centroid is inside a deadzone
+                        in_deadzone = False
+                        for (dz_x1, dz_y1, dz_x2, dz_y2) in deadzones:
+                            if dz_x1 <= cx <= dz_x2 and dz_y1 <= cy <= dz_y2:
+                                in_deadzone = True
+                                break
+                        if in_deadzone:
+                            continue
                                 
                         if area > max_area:
                             max_area = area
