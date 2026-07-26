@@ -935,6 +935,8 @@ def main():
             cx1, cx2 = int(px1 * scale_x), int(px2 * scale_x)
             cy1, cy2 = int(py1 * scale_y), int(py2 * scale_y)
 
+        display_mask = np.zeros((PREVIEW_H, PREVIEW_W), dtype=np.uint8)
+
         if full_native_mode:
             using_full_native = True
             
@@ -968,6 +970,10 @@ def main():
                 kernel_native = np.ones((3, 3), np.uint8)
                 native_mask = cv2.morphologyEx(native_mask, cv2.MORPH_OPEN, kernel_native)
                 native_mask = cv2.morphologyEx(native_mask, cv2.MORPH_CLOSE, kernel_native)
+                
+                if (px2 - px1) > 0 and (py2 - py1) > 0:
+                    preview_sized_mask = cv2.resize(native_mask, (px2 - px1, py2 - py1))
+                    display_mask[py1:py2, px1:px2] = preview_sized_mask
                 
                 native_contours, _ = cv2.findContours(native_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 
@@ -1049,6 +1055,12 @@ def main():
                     crop_mask = cv2.morphologyEx(crop_mask, cv2.MORPH_OPEN, kernel_roi)
                     crop_mask = cv2.morphologyEx(crop_mask, cv2.MORPH_CLOSE, kernel_roi)
                     
+                    rx1_p, ry1_p = int(x1 / scale_x), int(y1 / scale_y)
+                    rx2_p, ry2_p = int(x2 / scale_x), int(y2 / scale_y)
+                    if (rx2_p - rx1_p) > 0 and (ry2_p - ry1_p) > 0:
+                        preview_sized_roi = cv2.resize(crop_mask, (rx2_p - rx1_p, ry2_p - ry1_p))
+                        display_mask[ry1_p:ry2_p, rx1_p:rx2_p] = preview_sized_roi
+                    
                     roi_contours, _ = cv2.findContours(crop_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                     
                     for contour in roi_contours:
@@ -1128,6 +1140,9 @@ def main():
             mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
             mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
             
+            if (px2 - px1) > 0 and (py2 - py1) > 0:
+                display_mask[py1:py2, px1:px2] = mask
+            
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
             for contour in contours:
@@ -1172,11 +1187,15 @@ def main():
         if best_contour is not None and target_center is not None:
             if using_full_native:
                 nx, ny, nw, nh = cv2.boundingRect(best_contour)
+                nx += cx1
+                ny += cy1
                 px, py = int(nx / scale_x), int(ny / scale_y)
                 pw, ph = int(nw / scale_x), int(nh / scale_y)
                 cv2.rectangle(resized_frame, (px, py), (px + pw, py + ph), (255, 0, 255), 2)
             elif not using_roi_mode:
                 x, y, w, h = cv2.boundingRect(best_contour)
+                x += px1
+                y += py1
                 cv2.rectangle(resized_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
             cv2.circle(resized_frame, target_center, 5, (0, 0, 255), -1)
@@ -1353,8 +1372,7 @@ def main():
 
         # --- Composite the unified canvas ---
         # Convert single-channel mask to 3-channel BGR for side-by-side display
-        mask_resized = cv2.resize(mask, (PREVIEW_W, PREVIEW_H))
-        mask_bgr = cv2.cvtColor(mask_resized, cv2.COLOR_GRAY2BGR)
+        mask_bgr = cv2.cvtColor(display_mask, cv2.COLOR_GRAY2BGR)
 
         # Draw section labels on each panel
         preview_label = "LIVE PREVIEW [FROZEN - Press F/SPACE]" if is_frozen else "LIVE PREVIEW"
