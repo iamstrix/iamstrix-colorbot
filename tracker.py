@@ -136,6 +136,7 @@ dz_drawing = False
 
 # ROI tracking mode toggle
 high_res_enabled = True
+full_native_mode = False
 
 # Keyboard Scan Codes for WASD
 SCAN_W = 0x11
@@ -585,7 +586,8 @@ def save_profile(slot_id):
             "active": lock_area_active
         },
         "deadzones": [list(dz) for dz in deadzones],
-        "high_res_enabled": high_res_enabled
+        "high_res_enabled": high_res_enabled,
+        "full_native_mode": full_native_mode
     }
     
     file_path = get_profile_path(slot_id)
@@ -602,11 +604,12 @@ def load_profile(slot_id):
     """Loads configuration from profile JSON file if it exists."""
     global selected_slot, color_slots, macro_path_cells, macro_steps
     global lock_area_start, lock_area_end, lock_area_active, deadzones
-    global high_res_enabled
+    global high_res_enabled, full_native_mode
     
     file_path = get_profile_path(slot_id)
     if not os.path.exists(file_path):
         deadzones = []
+        full_native_mode = False
         lock_area_start = None
         lock_area_end = None
         lock_area_active = False
@@ -655,6 +658,12 @@ def load_profile(slot_id):
 
         if "deadzones" in config_data:
             deadzones = [tuple(dz) for dz in config_data["deadzones"]]
+            
+        if "high_res_enabled" in config_data:
+            high_res_enabled = config_data.get("high_res_enabled", True)
+
+        if "full_native_mode" in config_data:
+            full_native_mode = config_data.get("full_native_mode", False)
         else:
             deadzones = []
             
@@ -797,6 +806,7 @@ def main():
     f4_was_down = False
     f5_was_down = False
     f6_was_down = False
+    f7_was_down = False
 
     # ROI (Region of Interest) tracking state for high-resolution target preservation
     roi_center_native = None  # (cx_native, cy_native)
@@ -906,15 +916,104 @@ def main():
         best_contour = None
         max_area = 0
         using_roi_mode = False
+        using_full_native = False
+
+        crop_active = False
+        cx1, cy1, cx2, cy2 = 0, 0, orig_w, orig_h # Native bounds
+        px1, py1, px2, py2 = 0, 0, PREVIEW_W, PREVIEW_H # Preview bounds
+
+        if lock_area_active and lock_area_start is not None and lock_area_end is not None:
+            crop_active = True
+            lx1, ly1 = lock_area_start
+            lx2, ly2 = lock_area_end
+            
+            # Preview bounds
+            px1, px2 = max(0, min(lx1, lx2)), min(PREVIEW_W, max(lx1, lx2))
+            py1, py2 = max(0, min(ly1, ly2)), min(PREVIEW_H, max(ly1, ly2))
+            
+            # Native bounds
+            cx1, cx2 = int(px1 * scale_x), int(px2 * scale_x)
+            cy1, cy2 = int(py1 * scale_y), int(py2 * scale_y)
+
+        if full_native_mode:
+            using_full_native = True
+            
+            crop_frame = frame[cy1:cy2, cx1:cx2]
+            native_hsv = cv2.cvtColor(crop_frame, cv2.COLOR_BGR2HSV)
+            native_mask = None
+            for slot in color_slots:
+                if slot["active"]:
+                    sl_h, sh_h, sl_s, sh_s, sl_v, sh_v = slot["hsv"]
+                    m = cv2.inRange(native_hsv, np.array([sl_h, sl_s, sl_v]), np.array([sh_h, sh_s, sh_v]))
+                    if native_mask is None:
+                        native_mask = m
+                    else:
+                        native_mask = cv2.bitwise_or(native_mask, m)
+            
+            if native_mask is not None:
+                # Zero out deadzones directly on native mask
+                for (dz_x1, dz_y1, dz_x2, dz_y2) in deadzones:
+                    ndz_x1 = int(dz_x1 * scale_x)
+                    ndz_y1 = int(dz_y1 * scale_y)
+                    ndz_x2 = int(dz_x2 * scale_x)
+                    ndz_y2 = int(dz_y2 * scale_y)
+                    
+                    ldz_x1 = max(0, ndz_x1 - cx1)
+                    ldz_y1 = max(0, ndz_y1 - cy1)
+                    ldz_x2 = min(cx2 - cx1, ndz_x2 - cx1)
+                    ldz_y2 = min(cy2 - cy1, ndz_y2 - cy1)
+                    if ldz_x2 > ldz_x1 and ldz_y2 > ldz_y1:
+                        native_mask[ldz_y1:ldz_y2, ldz_x1:ldz_x2] = 0
+
+                kernel_native = np.ones((3, 3), np.uint8)
+                native_mask = cv2.morphologyEx(native_mask, cv2.MORPH_OPEN, kernel_native)
+                native_mask = cv2.morphologyEx(native_mask, cv2.MORPH_CLOSE, kernel_native)
+                
+                native_contours, _ = cv2.findContours(native_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                
+                min_area_native = int(min_area * scale_x * scale_y)
+                
+                for contour in native_contours:
+                    area = cv2.contourArea(contour)
+                    if area > min_area_native:
+                        M = cv2.moments(contour)
+                        if M["m00"] > 0:
+                            cx_native = int(M["m10"] / M["m00"]) + cx1
+                            cy_native = int(M["m01"] / M["m00"]) + cy1
+                            
+                            cx_prev = int(cx_native / scale_x)
+                            cy_prev = int(cy_native / scale_y)
+                            
+                            if lock_area_active and lock_area_start is not None and lock_area_end is not None:
+                                lx1, ly1 = lock_area_start
+                                lx2, ly2 = lock_area_end
+                                min_x, max_x = min(lx1, lx2), max(lx1, lx2)
+                                min_y, max_y = min(ly1, ly2), max(ly1, ly2)
+                                if not (min_x <= cx_prev <= max_x and min_y <= cy_prev <= max_y):
+                                    continue
+
+                            in_deadzone = False
+                            for (dz_x1, dz_y1, dz_x2, dz_y2) in deadzones:
+                                if dz_x1 <= cx_prev <= dz_x2 and dz_y1 <= cy_prev <= dz_y2:
+                                    in_deadzone = True
+                                    break
+                            if in_deadzone:
+                                continue
+                                    
+                            if area > max_area:
+                                max_area = area
+                                best_contour = contour
+                                target_center = (cx_prev, cy_prev)
+                                roi_center_native = (cx_native, cy_native)
 
         # 1. Attempt High-Res Native ROI Crop detection if a previous target location exists
-        if high_res_enabled and roi_center_native is not None and roi_frames_count < MAX_ROI_FRAMES:
+        elif high_res_enabled and roi_center_native is not None and roi_frames_count < MAX_ROI_FRAMES:
             rx, ry = roi_center_native
             half_size = ROI_SIZE_NATIVE // 2
-            x1 = max(0, rx - half_size)
-            y1 = max(0, ry - half_size)
-            x2 = min(orig_w, rx + half_size)
-            y2 = min(orig_h, ry + half_size)
+            x1 = max(cx1, rx - half_size)
+            y1 = max(cy1, ry - half_size)
+            x2 = min(cx2, rx + half_size)
+            y2 = min(cy2, ry + half_size)
 
             if (x2 - x1) > 20 and (y2 - y1) > 20:
                 crop_frame = frame[y1:y2, x1:x2]
@@ -1001,22 +1100,29 @@ def main():
         else:
             # 2. Fallback / Periodic Full-Screen Search Mode
             roi_frames_count = 0
+            
+            crop_hsv = hsv[py1:py2, px1:px2]
             mask = None
             for slot in color_slots:
                 if slot["active"]:
                     sl_h, sh_h, sl_s, sh_s, sl_v, sh_v = slot["hsv"]
-                    m = cv2.inRange(hsv, np.array([sl_h, sl_s, sl_v]), np.array([sh_h, sh_s, sh_v]))
+                    m = cv2.inRange(crop_hsv, np.array([sl_h, sl_s, sl_v]), np.array([sh_h, sh_s, sh_v]))
                     if mask is None:
                         mask = m
                     else:
                         mask = cv2.bitwise_or(mask, m)
                         
             if mask is None:
-                mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
+                mask = np.zeros(crop_hsv.shape[:2], dtype=np.uint8)
 
             # Zero out deadzones directly on the mask
             for (dz_x1, dz_y1, dz_x2, dz_y2) in deadzones:
-                mask[dz_y1:dz_y2, dz_x1:dz_x2] = 0
+                ldz_x1 = max(0, dz_x1 - px1)
+                ldz_y1 = max(0, dz_y1 - py1)
+                ldz_x2 = min(px2 - px1, dz_x2 - px1)
+                ldz_y2 = min(py2 - py1, dz_y2 - py1)
+                if ldz_x2 > ldz_x1 and ldz_y2 > ldz_y1:
+                    mask[ldz_y1:ldz_y2, ldz_x1:ldz_x2] = 0
 
             kernel = np.ones((3, 3), np.uint8)
             mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
@@ -1029,8 +1135,8 @@ def main():
                 if area > min_area:
                     M = cv2.moments(contour)
                     if M["m00"] > 0:
-                        cx = int(M["m10"] / M["m00"])
-                        cy = int(M["m01"] / M["m00"])
+                        cx = int(M["m10"] / M["m00"]) + px1
+                        cy = int(M["m01"] / M["m00"]) + py1
                         
                         if lock_area_active and lock_area_start is not None and lock_area_end is not None:
                             lx1, ly1 = lock_area_start
@@ -1059,12 +1165,29 @@ def main():
             else:
                 roi_center_native = None
 
+        if full_native_mode:
+            cv2.putText(resized_frame, "[FULL NATIVE SCAN ACTIVE]", (15, 25),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2)
+
         if best_contour is not None and target_center is not None:
-            if not using_roi_mode:
+            if using_full_native:
+                nx, ny, nw, nh = cv2.boundingRect(best_contour)
+                px, py = int(nx / scale_x), int(ny / scale_y)
+                pw, ph = int(nw / scale_x), int(nh / scale_y)
+                cv2.rectangle(resized_frame, (px, py), (px + pw, py + ph), (255, 0, 255), 2)
+            elif not using_roi_mode:
                 x, y, w, h = cv2.boundingRect(best_contour)
                 cv2.rectangle(resized_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+
             cv2.circle(resized_frame, target_center, 5, (0, 0, 255), -1)
-            mode_tag = "ROI Native" if using_roi_mode else "Full Search"
+            
+            if using_full_native:
+                mode_tag = "Full Native"
+            elif using_roi_mode:
+                mode_tag = "ROI Native"
+            else:
+                mode_tag = "Full Search"
+                
             cv2.putText(resized_frame, f"Target ({mode_tag} Area: {int(max_area)})", (target_center[0] - 20, max(20, target_center[1] - 10)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 2)
             
@@ -1327,9 +1450,11 @@ def main():
                     cv2.FONT_HERSHEY_SIMPLEX, 0.36, (200, 200, 200), 1)
         cv2.putText(macro_panel, "F5       : Toggle Patrol Macro", (col2_l, 182),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.36, (200, 200, 200), 1)
-        cv2.putText(macro_panel, "F6       : Toggle High-Res Scan", (col2_l, 204),
+        cv2.putText(macro_panel, "F6       : Toggle High-Res ROI", (col2_l, 204),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.36, (200, 200, 200), 1)
-        cv2.putText(macro_panel, "q        : Save & Quit", (col2_l, 226),
+        cv2.putText(macro_panel, "F7       : Toggle Full Native Scan", (col2_l, 224),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.36, (200, 200, 200), 1)
+        cv2.putText(macro_panel, "q        : Save & Quit", (col2_l, 244),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.36, (200, 200, 200), 1)
 
         # Sub-Column 2: Mouse Actions
@@ -1511,6 +1636,14 @@ def main():
             high_res_enabled = not high_res_enabled
             print(f"[INFO] High-Res HSV Scanning {'ENABLED' if high_res_enabled else 'DISABLED'}.")
         f6_was_down = f6_is_down
+
+        # Handle F7 key for Full Native Scan Toggle
+        f7_state = win32api.GetAsyncKeyState(win32con.VK_F7) & 0x8000
+        f7_is_down = bool(f7_state)
+        if f7_is_down and not f7_was_down:
+            full_native_mode = not full_native_mode
+            print(f"[INFO] Full Native Screen Scanning {'ENABLED' if full_native_mode else 'DISABLED'}.")
+        f7_was_down = f7_is_down
 
         # Press 'q' to exit, 'f' or SPACEBAR to freeze/unfreeze frame
         key = cv2.waitKey(1) & 0xFF

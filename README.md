@@ -75,6 +75,8 @@ python tracker.py
 | Left-click drag (grid) | Draw freeform WASD patrol path |
 | Right-click (grid) | Clear patrol path |
 | F5 | Start or stop patrol macro |
+| F6 | Toggle High-Res ROI mode (260x260 crop scan) |
+| F7 | Toggle Full Native Scan mode (scans entire native screen) |
 | q | Auto-save active profile and quit application |
 
 ## Project Structure
