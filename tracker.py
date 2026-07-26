@@ -710,7 +710,7 @@ def main():
     global color_slots, selected_slot
     global macro_running, macro_thread, macro_stop_event, macro_current_step
     global macro_drawing, macro_path_cells, macro_last_cell, macro_steps
-    global high_res_enabled
+    global high_res_enabled, full_native_mode
     
     set_dpi_awareness()
     
