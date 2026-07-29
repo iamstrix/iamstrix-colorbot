@@ -336,6 +336,7 @@ def trace_orthogonal(from_cell, to_cell):
     return cells
 
 def mouse_callback(event, x, y, flags, param):
+    global mouse_x, mouse_y
     global active_slider_drag, drag_start, drag_end, drawing_rect, calibrate_request
     global lock_area_start, lock_area_end, drawing_lock_area, lock_area_active
     global deadzones, dz_start, dz_end, dz_drawing, exact_input_request
@@ -1506,6 +1507,30 @@ def main():
         # --- Composite the unified canvas ---
         # Convert single-channel mask to 3-channel BGR for side-by-side display
         mask_bgr = cv2.cvtColor(display_mask, cv2.COLOR_GRAY2BGR)
+
+        # Hover tooltip and exact pixel outline for color mask
+        if PREVIEW_W <= mouse_x < PREVIEW_W * 2 and 0 <= mouse_y < PREVIEW_H:
+            mx, my = mouse_x - PREVIEW_W, mouse_y
+            # Red outline on the exact pixel(s) hovered (a small 3x3 hollow box for visibility)
+            cv2.rectangle(mask_bgr, (mx - 1, my - 1), (mx + 1, my + 1), (0, 0, 255), 1)
+            
+            # Find which contour we are hovering over to show exact native area
+            ui_contours, _ = cv2.findContours(display_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for contour in ui_contours:
+                if cv2.pointPolygonTest(contour, (mx, my), False) >= 0:
+                    hover_area = cv2.contourArea(contour)
+                    native_hover_area = int(hover_area * scale_x * scale_y)
+                    
+                    # Draw tooltip near cursor
+                    tt_x, tt_y = mx + 15, my + 15
+                    if tt_x + 120 > PREVIEW_W: tt_x = mx - 130 # flip if clipping right
+                    if tt_y + 15 > PREVIEW_H: tt_y = my - 25 # flip if clipping bottom
+                    
+                    cv2.rectangle(mask_bgr, (tt_x, tt_y - 15), (tt_x + 115, tt_y + 10), (30, 30, 30), -1)
+                    cv2.rectangle(mask_bgr, (tt_x, tt_y - 15), (tt_x + 115, tt_y + 10), (0, 255, 255), 1)
+                    cv2.putText(mask_bgr, f"Area: {native_hover_area}", (tt_x + 5, tt_y + 2),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
+                    break
 
         # Draw section labels on each panel
         preview_label = "LIVE PREVIEW [FROZEN - Press F/SPACE]" if is_frozen else "LIVE PREVIEW"
