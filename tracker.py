@@ -158,6 +158,7 @@ deadzones = []  # List of (x1, y1, x2, y2) in preview coordinates
 dz_start = None
 dz_end = None
 dz_drawing = False
+exact_input_request = None
 
 # ROI tracking mode toggle
 high_res_enabled = True
@@ -335,13 +336,11 @@ def trace_orthogonal(from_cell, to_cell):
     return cells
 
 def mouse_callback(event, x, y, flags, param):
-    global mouse_x, mouse_y
-    global drag_start, drag_end, drawing_rect, calibrate_request
+    global active_slider_drag, drag_start, drag_end, drawing_rect, calibrate_request
     global lock_area_start, lock_area_end, drawing_lock_area, lock_area_active
-    global deadzones, dz_start, dz_end, dz_drawing
-    global color_slots, selected_slot
+    global deadzones, dz_start, dz_end, dz_drawing, exact_input_request
     global macro_drawing, macro_path_cells, macro_last_cell, macro_steps
-    global active_slider_drag
+    global selected_slot, color_slots, prioritized_slots
     
     if event == cv2.EVENT_MOUSEMOVE:
         mouse_x = x
@@ -426,20 +425,7 @@ def mouse_callback(event, x, y, flags, param):
     elif event == cv2.EVENT_RBUTTONDOWN:
         hit = check_slider_hit(x, y)
         if hit:
-            import tkinter as tk
-            from tkinter import simpledialog
-            
-            root = tk.Tk()
-            root.withdraw()
-            root.attributes("-topmost", True)
-            
-            info = sliders[hit]
-            val = simpledialog.askinteger("Exact Input", f"Enter exact value for {hit} ({info['min']} - {info['max']}):",
-                                          initialvalue=get_val(hit), minvalue=info["min"], maxvalue=info["max"], parent=root)
-            root.destroy()
-            if val is not None:
-                set_val(hit, val)
-                print(f"[INFO] Set {hit} to {val} via exact input.")
+            exact_input_request = hit
             return
             
         if y >= PREVIEW_H + SLOTS_H:
@@ -788,12 +774,13 @@ def macro_loop(steps, ms_per_cell, stop_event):
         release_all_keys()
         macro_current_step = -1
         print("[MACRO] Patrol loop stopped.")
+
 def main():
     global drag_start, drag_end, drawing_rect, calibrate_request
-    global lock_area_start, lock_area_end, drawing_lock_area, lock_area_active
-    global deadzones, dz_start, dz_end, dz_drawing
-    global color_slots, selected_slot
-    global macro_running, macro_thread, macro_stop_event, macro_current_step
+    global lock_area_start, lock_area_end, lock_area_active
+    global deadzones, dz_start, dz_end, dz_drawing, exact_input_request
+    global current_monitor, target_rect
+    global macro_current_step, macro_running, macro_stop_event, macro_thread
     global macro_drawing, macro_path_cells, macro_last_cell, macro_steps
     global high_res_enabled, full_native_mode
     
@@ -1804,6 +1791,24 @@ def main():
             full_native_mode = not full_native_mode
             print(f"[INFO] Full Native Screen Scanning {'ENABLED' if full_native_mode else 'DISABLED'}.")
         f7_was_down = f7_is_down
+
+        # Handle exact input requests from UI right-clicks safely on main thread
+        if exact_input_request:
+            import tkinter as tk
+            from tkinter import simpledialog
+            
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            
+            info = sliders[exact_input_request]
+            val = simpledialog.askinteger("Exact Input", f"Enter exact value for {exact_input_request} ({info['min']} - {info['max']}):",
+                                          initialvalue=get_val(exact_input_request), minvalue=info["min"], maxvalue=info["max"], parent=root)
+            root.destroy()
+            if val is not None:
+                set_val(exact_input_request, val)
+                print(f"[INFO] Set {exact_input_request} to {val} via exact input.")
+            exact_input_request = None
 
         # Press 'q' to exit, 'f' or SPACEBAR to freeze/unfreeze frame
         key = cv2.waitKey(1) & 0xFF
