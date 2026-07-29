@@ -336,6 +336,7 @@ def trace_orthogonal(from_cell, to_cell):
     return cells
 
 def mouse_callback(event, x, y, flags, param):
+    global mouse_x, mouse_y
     global active_slider_drag, drag_start, drag_end, drawing_rect, calibrate_request
     global lock_area_start, lock_area_end, drawing_lock_area, lock_area_active
     global deadzones, dz_start, dz_end, dz_drawing, exact_input_request
