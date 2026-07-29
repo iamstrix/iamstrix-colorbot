@@ -97,6 +97,31 @@ def send_atomic_click(x, y):
     # Inject all events together atomically
     ctypes.windll.user32.SendInput(3, ctypes.byref(events), ctypes.sizeof(Input))
 
+def send_atomic_down(x, y):
+    """Moves to absolute coordinates and holds left click down."""
+    screen_w = ctypes.windll.user32.GetSystemMetrics(0)
+    screen_h = ctypes.windll.user32.GetSystemMetrics(1)
+    norm_x = int((x * 65535) / (screen_w - 1))
+    norm_y = int((y * 65535) / (screen_h - 1))
+    
+    events = (Input * 2)()
+    events[0].type = win32con.INPUT_MOUSE
+    events[0].ii.mi.dx = norm_x
+    events[0].ii.mi.dy = norm_y
+    events[0].ii.mi.dwFlags = win32con.MOUSEEVENTF_MOVE | win32con.MOUSEEVENTF_ABSOLUTE
+    
+    events[1].type = win32con.INPUT_MOUSE
+    events[1].ii.mi.dwFlags = win32con.MOUSEEVENTF_LEFTDOWN
+    
+    ctypes.windll.user32.SendInput(2, ctypes.byref(events), ctypes.sizeof(Input))
+
+def send_mouse_up():
+    """Releases the left click."""
+    event = Input()
+    event.type = win32con.INPUT_MOUSE
+    event.ii.mi.dwFlags = win32con.MOUSEEVENTF_LEFTUP
+    ctypes.windll.user32.SendInput(1, ctypes.byref(event), ctypes.sizeof(Input))
+
 def send_glide_move(x, y):
     """Moves the cursor smoothly to absolute coordinates using SendInput."""
     screen_w = ctypes.windll.user32.GetSystemMetrics(0)
@@ -218,7 +243,7 @@ sliders = {
     "High V":            {"val": 110,  "min": 0, "max": 255, "desc": "High limit for Value."},
     "Min Area":          {"val": 1000, "min": 0, "max": 5000, "desc": "Minimum target size in pixels."},
     "Smoothing":         {"val": 3,    "min": 1, "max": 20,  "desc": "Divisor for cursor glide interpolation."},
-    "Click Speed (CPS)": {"val": 0,    "min": 0, "max": 50,  "desc": "Auto-click rate."},
+    "Click Speed (CPS)": {"val": 0,    "min": -1, "max": 50,  "desc": "-1=Hold, 0=Off, 1-50=Auto-click rate."},
     "ms/cell":           {"val": 100,  "min": 10, "max": 500, "desc": "Duration per grid cell for WASD macro."},
     "Monitor":           {"val": 0,    "min": 0, "max": 0,   "desc": "Index of display screen to capture."}
 }
@@ -847,8 +872,8 @@ def main():
         {"prefix": "Low V:", "name": "Low V", "desc": "Low limit for Value (brightness). Lower values capture shadowed regions."},
         {"prefix": "High V:", "name": "High V", "desc": "High limit for Value. Higher values capture highlighted regions."},
         {"prefix": "Min Area:", "name": "Min Area", "desc": "Minimum target size in pixels. Filters out small background noise particles."},
-        {"prefix": "Smoothing:", "name": "Smoothing", "desc": "Divisor for cursor glide interpolation. Higher is smoother; 1 is instant snap."},
-        {"prefix": "Click Speed (CPS):", "name": "Click Speed (CPS)", "desc": "Auto-click rate. Synchronizes clicks with tracking to prevent dragging bugs."},
+        {"prefix": "Smoothing:", "name": "Smoothing", "desc": "Divisor for cursor glide interpolation. Higher = smoother/slower."},
+        {"prefix": "Click Speed (CPS):", "name": "Click Speed (CPS)", "desc": "-1: Hold LClick, 0: Off, 1-50: Auto-click rate."},
         {"prefix": "ms/cell:", "name": "ms/cell", "desc": "Duration in milliseconds per grid cell for WASD patrol macro movement."},
         {"prefix": "Monitor:", "name": "Monitor", "desc": "Index of display screen to capture and offset mouse cursor tracking coordinates."}
     ]
@@ -856,6 +881,7 @@ def main():
     hovered_variable = None
     hover_start_time = 0
     last_click_time = 0
+    mouse_is_held = False
 
     last_frame = None
     lock_enabled = False
@@ -1333,11 +1359,21 @@ def main():
                 if time.time() - last_click_time >= interval:
                     should_click = True
             
-            if should_click:
+            if cps == -1:
+                # Continuous Hold mode
+                send_atomic_down(tx, ty)
+                mouse_is_held = True
+            elif should_click:
                 # Group absolute snap coordinates, left click down, and left click up as ONE atomic transaction
+                if mouse_is_held:
+                    send_mouse_up()
+                    mouse_is_held = False
                 send_atomic_click(tx, ty)
                 last_click_time = time.time()
             else:
+                if mouse_is_held and cps != -1:
+                    send_mouse_up()
+                    mouse_is_held = False
                 # Move cursor smoothly using SendInput absolute movement
                 new_x = curr_x + (tx - curr_x) / smoothing
                 new_y = curr_y + (ty - curr_y) / smoothing
@@ -1346,9 +1382,15 @@ def main():
             cv2.putText(resized_frame, "LOCK ACTIVE", (20, 40),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
         elif lock_enabled:
+            if mouse_is_held:
+                send_mouse_up()
+                mouse_is_held = False
             cv2.putText(resized_frame, "LOCK ACTIVE (No Target)", (20, 40),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2)
         else:
+            if mouse_is_held:
+                send_mouse_up()
+                mouse_is_held = False
             cv2.putText(resized_frame, "LOCK INACTIVE (ALT to Toggle)", (20, 40),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
