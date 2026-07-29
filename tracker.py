@@ -399,6 +399,24 @@ def mouse_callback(event, x, y, flags, param):
                 print("[INFO] Path too short. Draw across at least 2 cells.")
             
     elif event == cv2.EVENT_RBUTTONDOWN:
+        hit = check_slider_hit(x, y)
+        if hit:
+            import tkinter as tk
+            from tkinter import simpledialog
+            
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            
+            info = sliders[hit]
+            val = simpledialog.askinteger("Exact Input", f"Enter exact value for {hit} ({info['min']} - {info['max']}):",
+                                          initialvalue=get_val(hit), minvalue=info["min"], maxvalue=info["max"], parent=root)
+            root.destroy()
+            if val is not None:
+                set_val(hit, val)
+                print(f"[INFO] Set {hit} to {val} via exact input.")
+            return
+            
         if y >= PREVIEW_H + SLOTS_H:
             if GRID_LEFT <= x < GRID_LEFT + GRID_PX and GRID_TOP <= y < GRID_TOP + GRID_PX:
                 macro_path_cells = []
