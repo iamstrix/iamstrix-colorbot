@@ -194,9 +194,9 @@ def release_all_keys():
 
 # Multi-color targeting state
 color_slots = [
-    {"active": True, "hsv": (8, 18, 80, 255, 40, 110)},
-    {"active": False, "hsv": (0, 0, 0, 255, 0, 255)},
-    {"active": False, "hsv": (0, 0, 0, 255, 0, 255)}
+    {"active": True, "hsv": (8, 18, 80, 255, 40, 110), "min_area": 1000},
+    {"active": False, "hsv": (0, 0, 0, 255, 0, 255), "min_area": 1000},
+    {"active": False, "hsv": (0, 0, 0, 255, 0, 255), "min_area": 1000}
 ]
 selected_slot = 0
 
@@ -394,12 +394,14 @@ def mouse_callback(event, x, y, flags, param):
                     selected_slot = i
                     color_slots[i]["active"] = True
                     lh, hh, ls, hs, lv, hv = color_slots[i]["hsv"]
+                    c_ma = color_slots[i].get("min_area", 1000)
                     set_val("Low H", lh)
                     set_val("High H", hh)
                     set_val("Low S", ls)
                     set_val("High S", hs)
                     set_val("Low V", lv)
                     set_val("High V", hv)
+                    set_val("Min Area", c_ma)
                     print(f"[INFO] Selected Color Slot {i+1}")
                     break
         elif x < PREVIEW_W and y < PREVIEW_H:
@@ -495,8 +497,9 @@ def mouse_callback(event, x, y, flags, param):
                         color_slots[i]["hsv"] = (8, 18, 80, 255, 40, 110)
                     else:
                         color_slots[i]["hsv"] = (0, 0, 0, 255, 0, 255)
-                    
-                    if i == selected_slot:
+                    color_slots[i]["active"] = (i == 0)
+                    color_slots[i]["min_area"] = 1000
+                    if selected_slot == i:
                         min_h, max_h, min_s, max_s, min_v, max_v = color_slots[i]["hsv"]
                         set_val("Low H", min_h)
                         set_val("High H", max_h)
@@ -504,6 +507,7 @@ def mouse_callback(event, x, y, flags, param):
                         set_val("High S", max_s)
                         set_val("Low V", min_v)
                         set_val("High V", max_v)
+                        set_val("Min Area", 1000)
                         
                     print(f"[INFO] Cleared & Reset Color Slot {i+1} to default settings.")
                     break
@@ -637,8 +641,10 @@ def save_profile(slot_id):
     hs = get_val("High S")
     lv = get_val("Low V")
     hv = get_val("High V")
+    c_ma = get_val("Min Area")
     if 0 <= selected_slot < len(color_slots):
         color_slots[selected_slot]["hsv"] = (lh, hh, ls, hs, lv, hv)
+        color_slots[selected_slot]["min_area"] = c_ma
 
     config_data = {
         "color_slots": color_slots,
@@ -699,6 +705,7 @@ def load_profile(slot_id):
                     color_slots[i]["active"] = slot.get("active", False)
                     hsv = slot.get("hsv", (0, 0, 0, 255, 0, 255))
                     color_slots[i]["hsv"] = tuple(hsv)
+                    color_slots[i]["min_area"] = slot.get("min_area", 1000)
                     
         if "selected_slot" in config_data:
             selected_slot = max(0, min(len(color_slots) - 1, config_data["selected_slot"]))
@@ -711,6 +718,7 @@ def load_profile(slot_id):
         set_val("High S", hs)
         set_val("Low V", lv)
         set_val("High V", hv)
+        set_val("Min Area", color_slots[selected_slot].get("min_area", 1000))
         
         if "sliders" in config_data:
             for sname, sval in config_data["sliders"].items():
@@ -973,11 +981,12 @@ def main():
         h_s = get_val("High S")
         l_v = get_val("Low V")
         h_v = get_val("High V")
+        c_ma = get_val("Min Area")
         
         # Save to currently selected slot
         color_slots[selected_slot]["hsv"] = (l_h, h_h, l_s, h_s, l_v, h_v)
+        color_slots[selected_slot]["min_area"] = c_ma
 
-        min_area = get_val("Min Area")
         smoothing = max(1, get_val("Smoothing"))
         cps = get_val("Click Speed (CPS)")
         
@@ -1017,7 +1026,6 @@ def main():
             native_hsv = cv2.cvtColor(crop_frame, cv2.COLOR_BGR2HSV)
             combined_display_mask = None
             
-            min_area_native = int(min_area * scale_x * scale_y)
             kernel_native = np.ones((3, 3), np.uint8)
             
             target_found = False
@@ -1027,6 +1035,7 @@ def main():
                 if not slot["active"]: continue
                 
                 sl_h, sh_h, sl_s, sh_s, sl_v, sh_v = slot["hsv"]
+                slot_min_area = slot.get("min_area", 1000)
                 native_mask = cv2.inRange(native_hsv, np.array([sl_h, sl_s, sl_v]), np.array([sh_h, sh_s, sh_v]))
                 
                 # Zero out deadzones directly on native mask
@@ -1058,7 +1067,7 @@ def main():
                 
                 for contour in native_contours:
                     area = cv2.contourArea(contour)
-                    if area > min_area_native:
+                    if area > slot_min_area:
                         M = cv2.moments(contour)
                         if M["m00"] > 0:
                             cx_native = int(M["m10"] / M["m00"]) + cx1
@@ -1120,6 +1129,7 @@ def main():
                     if not slot["active"]: continue
                     
                     sl_h, sh_h, sl_s, sh_s, sl_v, sh_v = slot["hsv"]
+                    slot_min_area = slot.get("min_area", 1000)
                     crop_mask = cv2.inRange(crop_hsv, np.array([sl_h, sl_s, sl_v]), np.array([sh_h, sh_s, sh_v]))
                     
                     # Zero out deadzones on the ROI crop mask (convert preview->native->crop-local coords)
@@ -1153,7 +1163,7 @@ def main():
                     for contour in roi_contours:
                         area = cv2.contourArea(contour)
                         # Effective min area threshold for native cropped region
-                        if area >= max(5, int(min_area / (scale_x * scale_y))):
+                        if area >= max(5, int(slot_min_area / (scale_x * scale_y))):
                             M = cv2.moments(contour)
                             if M["m00"] > 0:
                                 cx_crop = int(M["m10"] / M["m00"])
@@ -1220,6 +1230,7 @@ def main():
                 if not slot["active"]: continue
                 
                 sl_h, sh_h, sl_s, sh_s, sl_v, sh_v = slot["hsv"]
+                slot_min_area = slot.get("min_area", 1000)
                 mask = cv2.inRange(crop_hsv, np.array([sl_h, sl_s, sl_v]), np.array([sh_h, sh_s, sh_v]))
                 
                 # Zero out deadzones directly on the mask
@@ -1246,7 +1257,7 @@ def main():
                 
                 for contour in contours:
                     area = cv2.contourArea(contour)
-                    if area > min_area:
+                    if area > slot_min_area:
                         M = cv2.moments(contour)
                         if M["m00"] > 0:
                             cx = int(M["m10"] / M["m00"]) + px1
