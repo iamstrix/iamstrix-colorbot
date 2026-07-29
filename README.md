@@ -12,12 +12,14 @@ A real-time color-based screen tracker that detects entities by HSV color thresh
 
 ### Multi-Color Targeting
 - 3 Color Slots: Track up to 3 distinct HSV profiles simultaneously in a combined detection mask.
-- Slot Selection: Left-click a slot box to select and tune it; right-click to clear.
+- Independent Min Areas: The `Min Area` slider is saved independently for each color slot, allowing precise size filtering (e.g., small enemies vs large gold drops).
+- Slot Selection: Left-click a slot box to select and tune it; middle-click to reset.
 
 ### Calibration and Controls
 - Freeze-Frame Calibration: Press F or SPACEBAR to pause the preview feed for precise crop selection of moving targets.
 - Drag-to-Calibrate: Left-click and drag over a target to auto-calculate optimal HSV bounds using percentile filtering.
-- Hover Tooltips: Hover over any trackbar label for 1 second to display contextual usage guides.
+- Exact Numerical Input: Right-click any slider to open a native dialog and type an exact numerical value.
+- Smart Area Tooltip: Hover your mouse over any blob in the right-side "Color Mask" panel to view its exact native area size for effortless threshold tuning.
 - Lock Boundary: Right-click and drag on the preview to restrict cursor locking to a specific region. Right-click once to clear.
 
 ### Freeform WASD Path Macro
@@ -28,7 +30,7 @@ A real-time color-based screen tracker that detects entities by HSV color thresh
 
 ### Auto-Clicker and Capture Hardware
 - Atomic SendInput Clicks: Groups mouse move, down, and up events into atomic kernel transactions to prevent drag-and-drop glitches.
-- Adjustable CPS: Configurable from 0 to 50 clicks per second.
+- Adjustable CPS: Configurable from 0 to 50 clicks per second. Set to -1 to enable Continuous Hold mode (holds left-click constantly while locked on target).
 - Capture Engines: Primary DirectX Desktop Duplication via dxcam, automatic fallback to mss.
 - Multi-Monitor Support: Automatic coordinate scaling, per-monitor DPI awareness, and dynamic display switching.
 
@@ -67,6 +69,8 @@ python tracker.py
 | Right-click (preview) | Clear lock boundary |
 | Middle-click drag (preview) | Draw deadzone exclusion region (blocks sticky UI) |
 | Middle-click (preview) | Delete deadzone box under cursor (newest first) |
+| Right-click (slider) | Open exact numerical input dialog for that slider |
+| Hover (mask panel) | View exact blob Area size and pixel outline |
 | F4 | Clear all active deadzones |
 | F / SPACEBAR | Toggle freeze-frame preview |
 | ALT | Toggle cursor lock on/off |
