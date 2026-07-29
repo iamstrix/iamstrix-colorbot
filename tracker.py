@@ -807,6 +807,7 @@ def main():
     f5_was_down = False
     f6_was_down = False
     f7_was_down = False
+    del_was_down = False
 
     # ROI (Region of Interest) tracking state for high-resolution target preservation
     roi_center_native = None  # (cx_native, cy_native)
@@ -1662,6 +1663,26 @@ def main():
             full_native_mode = not full_native_mode
             print(f"[INFO] Full Native Screen Scanning {'ENABLED' if full_native_mode else 'DISABLED'}.")
         f7_was_down = f7_is_down
+
+        # Handle Delete key to reset color settings
+        del_state = win32api.GetAsyncKeyState(win32con.VK_DELETE) & 0x8000
+        del_is_down = bool(del_state)
+        if del_is_down and not del_was_down:
+            if selected_slot == 0:
+                color_slots[selected_slot]["hsv"] = (8, 18, 80, 255, 40, 110)
+            else:
+                color_slots[selected_slot]["hsv"] = (0, 0, 0, 255, 0, 255)
+            
+            # Update UI sliders
+            min_h, max_h, min_s, max_s, min_v, max_v = color_slots[selected_slot]["hsv"]
+            set_val("Low H", min_h)
+            set_val("High H", max_h)
+            set_val("Low S", min_s)
+            set_val("High S", max_s)
+            set_val("Low V", min_v)
+            set_val("High V", max_v)
+            print(f"[INFO] Reset Color Slot {selected_slot + 1} to default settings.")
+        del_was_down = del_is_down
 
         # Press 'q' to exit, 'f' or SPACEBAR to freeze/unfreeze frame
         key = cv2.waitKey(1) & 0xFF
