@@ -174,6 +174,17 @@ color_slots = [
 ]
 selected_slot = 0
 
+prioritized_slots = []
+
+def get_ordered_slots():
+    order = []
+    for idx in prioritized_slots:
+        order.append(idx)
+    for i in range(len(color_slots)):
+        if i not in prioritized_slots:
+            order.append(i)
+    return order
+
 # Movement Macro State
 macro_drawing = False
 macro_path_cells = []       # List of (col, row) cells in the drawn path
@@ -403,8 +414,12 @@ def mouse_callback(event, x, y, flags, param):
             for i in range(3):
                 box_x = start_x + i * (box_width + box_spacing)
                 if box_x <= x <= box_x + box_width:
-                    color_slots[i]["active"] = False
-                    print(f"[INFO] Cleared Color Slot {i+1}")
+                    if i in prioritized_slots:
+                        prioritized_slots.remove(i)
+                        print(f"[INFO] Removed Color Slot {i+1} from priority list.")
+                    else:
+                        prioritized_slots.append(i)
+                        print(f"[INFO] Prioritized Color Slot {i+1} (Rank: {len(prioritized_slots)}).")
                     break
         elif x < PREVIEW_W and y < PREVIEW_H:
             lock_area_start = (x, y)
@@ -436,6 +451,33 @@ def mouse_callback(event, x, y, flags, param):
             dz_start = (x, y)
             dz_end = (x, y)
             dz_drawing = True
+        elif y >= PREVIEW_H:
+            box_width = 100
+            box_spacing = 30
+            start_x = (PREVIEW_W * 2 - (3 * box_width + 2 * box_spacing)) // 2
+            
+            for i in range(3):
+                box_x = start_x + i * (box_width + box_spacing)
+                if box_x <= x <= box_x + box_width:
+                    color_slots[i]["active"] = False
+                    if i in prioritized_slots:
+                        prioritized_slots.remove(i)
+                    if i == 0:
+                        color_slots[i]["hsv"] = (8, 18, 80, 255, 40, 110)
+                    else:
+                        color_slots[i]["hsv"] = (0, 0, 0, 255, 0, 255)
+                    
+                    if i == selected_slot:
+                        min_h, max_h, min_s, max_s, min_v, max_v = color_slots[i]["hsv"]
+                        set_val("Low H", min_h)
+                        set_val("High H", max_h)
+                        set_val("Low S", min_s)
+                        set_val("High S", max_s)
+                        set_val("Low V", min_v)
+                        set_val("High V", max_v)
+                        
+                    print(f"[INFO] Cleared & Reset Color Slot {i+1} to default settings.")
+                    break
             
     elif event == cv2.EVENT_MBUTTONUP:
         if dz_drawing:
@@ -807,7 +849,6 @@ def main():
     f5_was_down = False
     f6_was_down = False
     f7_was_down = False
-    del_was_down = False
 
     # ROI (Region of Interest) tracking state for high-resolution target preservation
     roi_center_native = None  # (cx_native, cy_native)
@@ -943,17 +984,20 @@ def main():
             
             crop_frame = frame[cy1:cy2, cx1:cx2]
             native_hsv = cv2.cvtColor(crop_frame, cv2.COLOR_BGR2HSV)
-            native_mask = None
-            for slot in color_slots:
-                if slot["active"]:
-                    sl_h, sh_h, sl_s, sh_s, sl_v, sh_v = slot["hsv"]
-                    m = cv2.inRange(native_hsv, np.array([sl_h, sl_s, sl_v]), np.array([sh_h, sh_s, sh_v]))
-                    if native_mask is None:
-                        native_mask = m
-                    else:
-                        native_mask = cv2.bitwise_or(native_mask, m)
+            combined_display_mask = None
             
-            if native_mask is not None:
+            min_area_native = int(min_area * scale_x * scale_y)
+            kernel_native = np.ones((3, 3), np.uint8)
+            
+            target_found = False
+            
+            for slot_idx in get_ordered_slots():
+                slot = color_slots[slot_idx]
+                if not slot["active"]: continue
+                
+                sl_h, sh_h, sl_s, sh_s, sl_v, sh_v = slot["hsv"]
+                native_mask = cv2.inRange(native_hsv, np.array([sl_h, sl_s, sl_v]), np.array([sh_h, sh_s, sh_v]))
+                
                 # Zero out deadzones directly on native mask
                 for (dz_x1, dz_y1, dz_x2, dz_y2) in deadzones:
                     ndz_x1 = int(dz_x1 * scale_x)
@@ -968,17 +1012,18 @@ def main():
                     if ldz_x2 > ldz_x1 and ldz_y2 > ldz_y1:
                         native_mask[ldz_y1:ldz_y2, ldz_x1:ldz_x2] = 0
 
-                kernel_native = np.ones((3, 3), np.uint8)
                 native_mask = cv2.morphologyEx(native_mask, cv2.MORPH_OPEN, kernel_native)
                 native_mask = cv2.morphologyEx(native_mask, cv2.MORPH_CLOSE, kernel_native)
                 
-                if (px2 - px1) > 0 and (py2 - py1) > 0:
-                    preview_sized_mask = cv2.resize(native_mask, (px2 - px1, py2 - py1))
-                    display_mask[py1:py2, px1:px2] = preview_sized_mask
+                if combined_display_mask is None:
+                    combined_display_mask = native_mask.copy()
+                else:
+                    combined_display_mask = cv2.bitwise_or(combined_display_mask, native_mask)
+                
+                if target_found: 
+                    continue # keep looping just to build the combined mask for visual preview
                 
                 native_contours, _ = cv2.findContours(native_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                
-                min_area_native = int(min_area * scale_x * scale_y)
                 
                 for contour in native_contours:
                     area = cv2.contourArea(contour)
@@ -1012,6 +1057,14 @@ def main():
                                 best_contour = contour
                                 target_center = (cx_prev, cy_prev)
                                 roi_center_native = (cx_native, cy_native)
+                
+                if best_contour is not None:
+                    target_found = True
+                    
+            if combined_display_mask is not None:
+                if (px2 - px1) > 0 and (py2 - py1) > 0:
+                    preview_sized_mask = cv2.resize(combined_display_mask, (px2 - px1, py2 - py1))
+                    display_mask[py1:py2, px1:px2] = preview_sized_mask
 
         # 1. Attempt High-Res Native ROI Crop detection if a previous target location exists
         elif high_res_enabled and roi_center_native is not None and roi_frames_count < MAX_ROI_FRAMES:
@@ -1026,17 +1079,18 @@ def main():
                 crop_frame = frame[y1:y2, x1:x2]
                 crop_hsv = cv2.cvtColor(crop_frame, cv2.COLOR_BGR2HSV)
                 
-                crop_mask = None
-                for slot in color_slots:
-                    if slot["active"]:
-                        sl_h, sh_h, sl_s, sh_s, sl_v, sh_v = slot["hsv"]
-                        m = cv2.inRange(crop_hsv, np.array([sl_h, sl_s, sl_v]), np.array([sh_h, sh_s, sh_v]))
-                        if crop_mask is None:
-                            crop_mask = m
-                        else:
-                            crop_mask = cv2.bitwise_or(crop_mask, m)
+                combined_display_mask = None
+                target_found = False
                 
-                if crop_mask is not None:
+                kernel_roi = np.ones((3, 3), np.uint8)
+                
+                for slot_idx in get_ordered_slots():
+                    slot = color_slots[slot_idx]
+                    if not slot["active"]: continue
+                    
+                    sl_h, sh_h, sl_s, sh_s, sl_v, sh_v = slot["hsv"]
+                    crop_mask = cv2.inRange(crop_hsv, np.array([sl_h, sl_s, sl_v]), np.array([sh_h, sh_s, sh_v]))
+                    
                     # Zero out deadzones on the ROI crop mask (convert preview->native->crop-local coords)
                     for (dz_x1, dz_y1, dz_x2, dz_y2) in deadzones:
                         # Preview coords -> Native coords
@@ -1052,16 +1106,17 @@ def main():
                         if ldz_x2 > ldz_x1 and ldz_y2 > ldz_y1:
                             crop_mask[ldz_y1:ldz_y2, ldz_x1:ldz_x2] = 0
 
-                    kernel_roi = np.ones((3, 3), np.uint8)
                     crop_mask = cv2.morphologyEx(crop_mask, cv2.MORPH_OPEN, kernel_roi)
                     crop_mask = cv2.morphologyEx(crop_mask, cv2.MORPH_CLOSE, kernel_roi)
                     
-                    rx1_p, ry1_p = int(x1 / scale_x), int(y1 / scale_y)
-                    rx2_p, ry2_p = int(x2 / scale_x), int(y2 / scale_y)
-                    if (rx2_p - rx1_p) > 0 and (ry2_p - ry1_p) > 0:
-                        preview_sized_roi = cv2.resize(crop_mask, (rx2_p - rx1_p, ry2_p - ry1_p))
-                        display_mask[ry1_p:ry2_p, rx1_p:rx2_p] = preview_sized_roi
-                    
+                    if combined_display_mask is None:
+                        combined_display_mask = crop_mask.copy()
+                    else:
+                        combined_display_mask = cv2.bitwise_or(combined_display_mask, crop_mask)
+                        
+                    if target_found:
+                        continue
+                        
                     roi_contours, _ = cv2.findContours(crop_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                     
                     for contour in roi_contours:
@@ -1101,6 +1156,16 @@ def main():
                                     target_center = (cx_prev, cy_prev)
                                     roi_center_native = (cx_native, cy_native)
                                     using_roi_mode = True
+                                    
+                    if best_contour is not None:
+                        target_found = True
+                        
+                if combined_display_mask is not None:
+                    rx1_p, ry1_p = int(x1 / scale_x), int(y1 / scale_y)
+                    rx2_p, ry2_p = int(x2 / scale_x), int(y2 / scale_y)
+                    if (rx2_p - rx1_p) > 0 and (ry2_p - ry1_p) > 0:
+                        preview_sized_roi = cv2.resize(combined_display_mask, (rx2_p - rx1_p, ry2_p - ry1_p))
+                        display_mask[ry1_p:ry2_p, rx1_p:rx2_p] = preview_sized_roi
 
         if using_roi_mode and target_center is not None:
             roi_frames_count += 1
@@ -1115,66 +1180,75 @@ def main():
             roi_frames_count = 0
             
             crop_hsv = hsv[py1:py2, px1:px2]
-            mask = None
-            for slot in color_slots:
-                if slot["active"]:
-                    sl_h, sh_h, sl_s, sh_s, sl_v, sh_v = slot["hsv"]
-                    m = cv2.inRange(crop_hsv, np.array([sl_h, sl_s, sl_v]), np.array([sh_h, sh_s, sh_v]))
-                    if mask is None:
-                        mask = m
-                    else:
-                        mask = cv2.bitwise_or(mask, m)
-                        
-            if mask is None:
-                mask = np.zeros(crop_hsv.shape[:2], dtype=np.uint8)
-
-            # Zero out deadzones directly on the mask
-            for (dz_x1, dz_y1, dz_x2, dz_y2) in deadzones:
-                ldz_x1 = max(0, dz_x1 - px1)
-                ldz_y1 = max(0, dz_y1 - py1)
-                ldz_x2 = min(px2 - px1, dz_x2 - px1)
-                ldz_y2 = min(py2 - py1, dz_y2 - py1)
-                if ldz_x2 > ldz_x1 and ldz_y2 > ldz_y1:
-                    mask[ldz_y1:ldz_y2, ldz_x1:ldz_x2] = 0
-
+            combined_display_mask = None
+            target_found = False
             kernel = np.ones((3, 3), np.uint8)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
             
-            if (px2 - px1) > 0 and (py2 - py1) > 0:
-                display_mask[py1:py2, px1:px2] = mask
-            
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            for contour in contours:
-                area = cv2.contourArea(contour)
-                if area > min_area:
-                    M = cv2.moments(contour)
-                    if M["m00"] > 0:
-                        cx = int(M["m10"] / M["m00"]) + px1
-                        cy = int(M["m01"] / M["m00"]) + py1
-                        
-                        if lock_area_active and lock_area_start is not None and lock_area_end is not None:
-                            lx1, ly1 = lock_area_start
-                            lx2, ly2 = lock_area_end
-                            min_x, max_x = min(lx1, lx2), max(lx1, lx2)
-                            min_y, max_y = min(ly1, ly2), max(ly1, ly2)
-                            if not (min_x <= cx <= max_x and min_y <= cy <= max_y):
-                                continue
+            for slot_idx in get_ordered_slots():
+                slot = color_slots[slot_idx]
+                if not slot["active"]: continue
+                
+                sl_h, sh_h, sl_s, sh_s, sl_v, sh_v = slot["hsv"]
+                mask = cv2.inRange(crop_hsv, np.array([sl_h, sl_s, sl_v]), np.array([sh_h, sh_s, sh_v]))
+                
+                # Zero out deadzones directly on the mask
+                for (dz_x1, dz_y1, dz_x2, dz_y2) in deadzones:
+                    ldz_x1 = max(0, dz_x1 - px1)
+                    ldz_y1 = max(0, dz_y1 - py1)
+                    ldz_x2 = min(px2 - px1, dz_x2 - px1)
+                    ldz_y2 = min(py2 - py1, dz_y2 - py1)
+                    if ldz_x2 > ldz_x1 and ldz_y2 > ldz_y1:
+                        mask[ldz_y1:ldz_y2, ldz_x1:ldz_x2] = 0
 
-                        # Explicitly skip if centroid is inside a deadzone
-                        in_deadzone = False
-                        for (dz_x1, dz_y1, dz_x2, dz_y2) in deadzones:
-                            if dz_x1 <= cx <= dz_x2 and dz_y1 <= cy <= dz_y2:
-                                in_deadzone = True
-                                break
-                        if in_deadzone:
-                            continue
+                mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+                mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+                
+                if combined_display_mask is None:
+                    combined_display_mask = mask.copy()
+                else:
+                    combined_display_mask = cv2.bitwise_or(combined_display_mask, mask)
+                    
+                if target_found:
+                    continue
+                    
+                contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                
+                for contour in contours:
+                    area = cv2.contourArea(contour)
+                    if area > min_area:
+                        M = cv2.moments(contour)
+                        if M["m00"] > 0:
+                            cx = int(M["m10"] / M["m00"]) + px1
+                            cy = int(M["m01"] / M["m00"]) + py1
+                            
+                            if lock_area_active and lock_area_start is not None and lock_area_end is not None:
+                                lx1, ly1 = lock_area_start
+                                lx2, ly2 = lock_area_end
+                                min_x, max_x = min(lx1, lx2), max(lx1, lx2)
+                                min_y, max_y = min(ly1, ly2), max(ly1, ly2)
+                                if not (min_x <= cx <= max_x and min_y <= cy <= max_y):
+                                    continue
+
+                            # Explicitly skip if centroid is inside a deadzone
+                            in_deadzone = False
+                            for (dz_x1, dz_y1, dz_x2, dz_y2) in deadzones:
+                                if dz_x1 <= cx <= dz_x2 and dz_y1 <= cy <= dz_y2:
+                                    in_deadzone = True
+                                    break
+                            if in_deadzone:
+                                continue
+                                    
+                            if area > max_area:
+                                max_area = area
+                                best_contour = contour
+                                target_center = (cx, cy)
                                 
-                        if area > max_area:
-                            max_area = area
-                            best_contour = contour
-                            target_center = (cx, cy)
+                if best_contour is not None:
+                    target_found = True
+            
+            if combined_display_mask is not None:
+                if (px2 - px1) > 0 and (py2 - py1) > 0:
+                    display_mask[py1:py2, px1:px2] = combined_display_mask
             
             if target_center is not None:
                 roi_center_native = (int(target_center[0] * scale_x), int(target_center[1] * scale_y))
@@ -1420,6 +1494,13 @@ def main():
             border_color = (0, 255, 255) if i == selected_slot else (100, 100, 100)
             border_thickness = 2 if i == selected_slot else 1
             cv2.rectangle(bottom_panel, (box_x, box_y), (box_x + box_width, box_y + 36), border_color, border_thickness)
+            
+            # Priority Badge
+            if i in prioritized_slots:
+                rank = prioritized_slots.index(i) + 1
+                badge_text = f"P{rank}"
+                cv2.rectangle(bottom_panel, (box_x + box_width - 25, box_y), (box_x + box_width, box_y + 15), (20, 120, 220), -1)
+                cv2.putText(bottom_panel, badge_text, (box_x + box_width - 21, box_y + 11), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1)
 
         # Build movement macro panel (three-column layout: Sliders | Controls | Grid & Steps)
         macro_panel = np.full((MACRO_H, PREVIEW_W * 2, 3), (28, 28, 28), dtype=np.uint8)
@@ -1663,26 +1744,6 @@ def main():
             full_native_mode = not full_native_mode
             print(f"[INFO] Full Native Screen Scanning {'ENABLED' if full_native_mode else 'DISABLED'}.")
         f7_was_down = f7_is_down
-
-        # Handle Delete key to reset color settings
-        del_state = win32api.GetAsyncKeyState(win32con.VK_DELETE) & 0x8000
-        del_is_down = bool(del_state)
-        if del_is_down and not del_was_down:
-            if selected_slot == 0:
-                color_slots[selected_slot]["hsv"] = (8, 18, 80, 255, 40, 110)
-            else:
-                color_slots[selected_slot]["hsv"] = (0, 0, 0, 255, 0, 255)
-            
-            # Update UI sliders
-            min_h, max_h, min_s, max_s, min_v, max_v = color_slots[selected_slot]["hsv"]
-            set_val("Low H", min_h)
-            set_val("High H", max_h)
-            set_val("Low S", min_s)
-            set_val("High S", max_s)
-            set_val("Low V", min_v)
-            set_val("High V", max_v)
-            print(f"[INFO] Reset Color Slot {selected_slot + 1} to default settings.")
-        del_was_down = del_is_down
 
         # Press 'q' to exit, 'f' or SPACEBAR to freeze/unfreeze frame
         key = cv2.waitKey(1) & 0xFF
