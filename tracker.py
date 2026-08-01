@@ -387,23 +387,47 @@ def mouse_callback(event, x, y, flags, param):
         elif y >= PREVIEW_H:
             box_width = 100
             box_spacing = 30
-            start_x = (PREVIEW_W * 2 - (3 * box_width + 2 * box_spacing)) // 2
+            has_add = len(color_slots) < 10
+            has_sub = len(color_slots) > 3
+            num_boxes = len(color_slots) + (1 if has_add else 0) + (1 if has_sub else 0)
+            start_x = (PREVIEW_W * 2 - (num_boxes * box_width + (num_boxes - 1) * box_spacing)) // 2
             
-            for i in range(3):
+            for i in range(num_boxes):
                 box_x = start_x + i * (box_width + box_spacing)
                 if box_x <= x <= box_x + box_width:
-                    selected_slot = i
-                    color_slots[i]["active"] = True
-                    lh, hh, ls, hs, lv, hv = color_slots[i]["hsv"]
-                    c_ma = color_slots[i].get("min_area", 1000)
-                    set_val("Low H", lh)
-                    set_val("High H", hh)
-                    set_val("Low S", ls)
-                    set_val("High S", hs)
-                    set_val("Low V", lv)
-                    set_val("High V", hv)
-                    set_val("Min Area", c_ma)
-                    print(f"[INFO] Selected Color Slot {i+1}")
+                    if i < len(color_slots):
+                        selected_slot = i
+                        color_slots[i]["active"] = True
+                        lh, hh, ls, hs, lv, hv = color_slots[i]["hsv"]
+                        c_ma = color_slots[i].get("min_area", 1000)
+                        set_val("Low H", lh)
+                        set_val("High H", hh)
+                        set_val("Low S", ls)
+                        set_val("High S", hs)
+                        set_val("Low V", lv)
+                        set_val("High V", hv)
+                        set_val("Min Area", c_ma)
+                        print(f"[INFO] Selected Color Slot {i+1}")
+                    elif i == len(color_slots) and has_add:
+                        color_slots.append({"active": False, "hsv": (0, 0, 0, 255, 0, 255), "min_area": 1000})
+                        print(f"[INFO] Added new Color Slot {len(color_slots)}")
+                    else:
+                        idx_to_remove = len(color_slots) - 1
+                        if idx_to_remove in prioritized_slots:
+                            prioritized_slots.remove(idx_to_remove)
+                        color_slots.pop()
+                        print(f"[INFO] Removed Color Slot {idx_to_remove + 1}")
+                        if selected_slot >= len(color_slots):
+                            selected_slot = len(color_slots) - 1
+                            lh, hh, ls, hs, lv, hv = color_slots[selected_slot]["hsv"]
+                            c_ma = color_slots[selected_slot].get("min_area", 1000)
+                            set_val("Low H", lh)
+                            set_val("High H", hh)
+                            set_val("Low S", ls)
+                            set_val("High S", hs)
+                            set_val("Low V", lv)
+                            set_val("High V", hv)
+                            set_val("Min Area", c_ma)
                     break
         elif x < PREVIEW_W and y < PREVIEW_H:
             drag_start = (x, y)
@@ -441,9 +465,12 @@ def mouse_callback(event, x, y, flags, param):
         elif y >= PREVIEW_H:
             box_width = 100
             box_spacing = 30
-            start_x = (PREVIEW_W * 2 - (3 * box_width + 2 * box_spacing)) // 2
+            has_add = len(color_slots) < 10
+            has_sub = len(color_slots) > 3
+            num_boxes = len(color_slots) + (1 if has_add else 0) + (1 if has_sub else 0)
+            start_x = (PREVIEW_W * 2 - (num_boxes * box_width + (num_boxes - 1) * box_spacing)) // 2
             
-            for i in range(3):
+            for i in range(len(color_slots)):
                 box_x = start_x + i * (box_width + box_spacing)
                 if box_x <= x <= box_x + box_width:
                     if i in prioritized_slots:
@@ -486,9 +513,12 @@ def mouse_callback(event, x, y, flags, param):
         elif y >= PREVIEW_H:
             box_width = 100
             box_spacing = 30
-            start_x = (PREVIEW_W * 2 - (3 * box_width + 2 * box_spacing)) // 2
+            has_add = len(color_slots) < 10
+            has_sub = len(color_slots) > 3
+            num_boxes = len(color_slots) + (1 if has_add else 0) + (1 if has_sub else 0)
+            start_x = (PREVIEW_W * 2 - (num_boxes * box_width + (num_boxes - 1) * box_spacing)) // 2
             
-            for i in range(3):
+            for i in range(len(color_slots)):
                 box_x = start_x + i * (box_width + box_spacing)
                 if box_x <= x <= box_x + box_width:
                     color_slots[i]["active"] = False
@@ -701,12 +731,17 @@ def load_profile(slot_id):
             config_data = json.load(f)
             
         if "color_slots" in config_data:
-            for i, slot in enumerate(config_data["color_slots"]):
-                if i < len(color_slots):
-                    color_slots[i]["active"] = slot.get("active", False)
+            color_slots.clear()
+            for slot in config_data["color_slots"]:
+                if len(color_slots) < 10:
+                    new_slot = {}
+                    new_slot["active"] = slot.get("active", False)
                     hsv = slot.get("hsv", (0, 0, 0, 255, 0, 255))
-                    color_slots[i]["hsv"] = tuple(hsv)
-                    color_slots[i]["min_area"] = slot.get("min_area", 1000)
+                    new_slot["hsv"] = tuple(hsv)
+                    new_slot["min_area"] = slot.get("min_area", 1000)
+                    color_slots.append(new_slot)
+            while len(color_slots) < 3:
+                color_slots.append({"active": False, "hsv": (0, 0, 0, 255, 0, 255), "min_area": 1000})
                     
         if "selected_slot" in config_data:
             selected_slot = max(0, min(len(color_slots) - 1, config_data["selected_slot"]))
@@ -1553,37 +1588,51 @@ def main():
                     
         box_width = 100
         box_spacing = 30
-        start_x = (PREVIEW_W * 2 - (3 * box_width + 2 * box_spacing)) // 2
+        has_add = len(color_slots) < 10
+        has_sub = len(color_slots) > 3
+        num_boxes = len(color_slots) + (1 if has_add else 0) + (1 if has_sub else 0)
+        start_x = (PREVIEW_W * 2 - (num_boxes * box_width + (num_boxes - 1) * box_spacing)) // 2
         
-        for i in range(3):
+        for i in range(num_boxes):
             box_x = start_x + i * (box_width + box_spacing)
             box_y = 6
             
-            # Fill color logic
-            if color_slots[i]["active"]:
-                lh, hh, ls, hs, lv, hv = color_slots[i]["hsv"]
-                avg_h = int((lh + hh) / 2)
-                avg_s = max(150, int((ls + hs) / 2))
-                avg_v = max(150, int((lv + hv) / 2))
+            if i < len(color_slots):
+                # Fill color logic
+                if color_slots[i]["active"]:
+                    lh, hh, ls, hs, lv, hv = color_slots[i]["hsv"]
+                    avg_h = int((lh + hh) / 2)
+                    avg_s = max(150, int((ls + hs) / 2))
+                    avg_v = max(150, int((lv + hv) / 2))
+                    
+                    bgr_color = cv2.cvtColor(np.uint8([[[avg_h, avg_s, avg_v]]]), cv2.COLOR_HSV2BGR)[0][0]
+                    bgr_color = (int(bgr_color[0]), int(bgr_color[1]), int(bgr_color[2]))
+                    cv2.rectangle(bottom_panel, (box_x, box_y), (box_x + box_width, box_y + 36), bgr_color, -1)
+                else:
+                    cv2.rectangle(bottom_panel, (box_x, box_y), (box_x + box_width, box_y + 36), (40, 40, 40), -1)
+                    cv2.putText(bottom_panel, "EMPTY", (box_x + 24, box_y + 23), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 150), 1)
                 
-                bgr_color = cv2.cvtColor(np.uint8([[[avg_h, avg_s, avg_v]]]), cv2.COLOR_HSV2BGR)[0][0]
-                bgr_color = (int(bgr_color[0]), int(bgr_color[1]), int(bgr_color[2]))
-                cv2.rectangle(bottom_panel, (box_x, box_y), (box_x + box_width, box_y + 36), bgr_color, -1)
+                # Border
+                border_color = (0, 255, 255) if i == selected_slot else (100, 100, 100)
+                border_thickness = 2 if i == selected_slot else 1
+                cv2.rectangle(bottom_panel, (box_x, box_y), (box_x + box_width, box_y + 36), border_color, border_thickness)
+                
+                # Priority Badge
+                if i in prioritized_slots:
+                    rank = prioritized_slots.index(i) + 1
+                    badge_text = f"P{rank}"
+                    cv2.rectangle(bottom_panel, (box_x + box_width - 25, box_y), (box_x + box_width, box_y + 15), (20, 120, 220), -1)
+                    cv2.putText(bottom_panel, badge_text, (box_x + box_width - 21, box_y + 11), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1)
+            elif i == len(color_slots) and has_add:
+                # Draw the "+" Add Button
+                cv2.rectangle(bottom_panel, (box_x, box_y), (box_x + box_width, box_y + 36), (60, 60, 60), -1)
+                cv2.putText(bottom_panel, "+", (box_x + 42, box_y + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
+                cv2.rectangle(bottom_panel, (box_x, box_y), (box_x + box_width, box_y + 36), (100, 100, 100), 1)
             else:
-                cv2.rectangle(bottom_panel, (box_x, box_y), (box_x + box_width, box_y + 36), (40, 40, 40), -1)
-                cv2.putText(bottom_panel, "EMPTY", (box_x + 24, box_y + 23), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 150), 1)
-            
-            # Border
-            border_color = (0, 255, 255) if i == selected_slot else (100, 100, 100)
-            border_thickness = 2 if i == selected_slot else 1
-            cv2.rectangle(bottom_panel, (box_x, box_y), (box_x + box_width, box_y + 36), border_color, border_thickness)
-            
-            # Priority Badge
-            if i in prioritized_slots:
-                rank = prioritized_slots.index(i) + 1
-                badge_text = f"P{rank}"
-                cv2.rectangle(bottom_panel, (box_x + box_width - 25, box_y), (box_x + box_width, box_y + 15), (20, 120, 220), -1)
-                cv2.putText(bottom_panel, badge_text, (box_x + box_width - 21, box_y + 11), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1)
+                # Draw the "-" Sub Button
+                cv2.rectangle(bottom_panel, (box_x, box_y), (box_x + box_width, box_y + 36), (60, 60, 60), -1)
+                cv2.putText(bottom_panel, "-", (box_x + 42, box_y + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (100, 100, 255), 2)
+                cv2.rectangle(bottom_panel, (box_x, box_y), (box_x + box_width, box_y + 36), (100, 100, 100), 1)
 
         # Build movement macro panel (three-column layout: Sliders | Controls | Grid & Steps)
         macro_panel = np.full((MACRO_H, PREVIEW_W * 2, 3), (28, 28, 28), dtype=np.uint8)
